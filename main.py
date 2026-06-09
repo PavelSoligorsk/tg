@@ -63,14 +63,15 @@ def get_chromium_path():
 browser_path = get_chromium_path()
 hti_args = {
     'custom_flags': [
-        '--headless=new',          # Использование нового стабильного headless-режима
+        '--headless',              # Стандартный headless режим
         '--no-sandbox',
         '--disable-gpu',
         '--hide-scrollbars',
-        '--disable-dev-shm-usage', # Решает проблему нехватки RAM памяти в Docker
+        '--disable-dev-shm-usage', # Спасает от нехватки памяти RAM в Docker
         '--disable-dbus',          # Игнорирует отсутствие системной шины d-bus
         '--no-zygote',
         '--single-process',
+        '--window-size=1280,1024', # Явно задаем размер окна под наш Xvfb
         '--default-background-color=eef2f3'
     ]
 }
