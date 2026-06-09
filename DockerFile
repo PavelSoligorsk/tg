@@ -3,18 +3,22 @@ FROM python:3.11-slim
 
 # Устанавливаем системные зависимости для Chromium
 # Добавляем gconf, libgdk-pixbuf, libgtk, чтобы браузер запустился в headless-режиме
+# Обновленный список зависимостей для современного Debian
 RUN apt-get update && apt-get install -y \
     chromium \
     chromium-driver \
-    libgconf-2-4 \
-    libatk1.0-0 \
     libatk-bridge2.0-0 \
-    libgdk-pixbuf2.0-0 \
     libgtk-3-0 \
     libgbm-dev \
     libnss3 \
     libxss1 \
     libasound2 \
+    libdrm2 \
+    libxkbcommon0 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxrandr2 \
+    libgbm1 \
     && rm -rf /var/lib/apt/lists/*
 
 # Рабочая директория
