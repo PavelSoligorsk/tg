@@ -49,19 +49,19 @@ def get_chromium_path():
 
 # Инициализация
 browser_path = get_chromium_path()
-hti_args = {
-    'custom_flags': [
+# Замените ваш блок инициализации hti на этот:
+hti = Html2Image(
+    browser_executable='/usr/bin/chromium',
+    custom_flags=[
         '--no-sandbox',
         '--disable-gpu',
         '--hide-scrollbars',
+        '--disable-dev-shm-usage', # Обязательно для Docker
+        '--disable-dbus',          # Игнорирует отсутствие D-Bus
+        '--no-zygote',             # Отключает ненужные процессы
         '--default-background-color=eef2f3'
     ]
-}
-
-if browser_path:
-    hti_args['browser_executable'] = browser_path
-
-hti = Html2Image(**hti_args)
+)
 class MathMessage(BaseModel):
     chat_id: int | str
     caption: str = ""
