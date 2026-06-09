@@ -1,15 +1,34 @@
+# Используем официальный образ Python
 FROM python:3.11-slim
 
-# Устанавливаем системные зависимости
+# Устанавливаем системные зависимости для Chromium
+# Добавляем gconf, libgdk-pixbuf, libgtk, чтобы браузер запустился в headless-режиме
 RUN apt-get update && apt-get install -y \
     chromium \
     chromium-driver \
+    libgconf-2-4 \
+    libatk1.0-0 \
+    libatk-bridge2.0-0 \
+    libgdk-pixbuf2.0-0 \
+    libgtk-3-0 \
+    libgbm-dev \
+    libnss3 \
+    libxss1 \
+    libasound2 \
     && rm -rf /var/lib/apt/lists/*
 
+# Рабочая директория
 WORKDIR /app
+
+# Сначала копируем только requirements.txt для кэширования слоев
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+
+# Копируем остальной код
 COPY . .
+
+# Открываем порт
+EXPOSE 8000
 
 # Запускаем приложение
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
