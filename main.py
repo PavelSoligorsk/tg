@@ -3,6 +3,7 @@ import io
 import re
 import time
 import base64
+import tempfile
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
@@ -15,28 +16,19 @@ load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
-    raise ValueError("BOT_TOKEN не найден в .env файле!")
-
-
+    raise ValueError("BOT_TOKEN не найден в переменных окружения / .env файле!")
 
 app = FastAPI(title="KaTeX Premium Render Bot API")
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
-import os
-import sys
-import platform
-from html2image import Html2Image
-
 def get_chromium_path():
-    # 1. Сначала проверяем переменную окружения, если она задана явно (удобно для Docker)
     if os.getenv("CHROMIUM_PATH"):
         return os.getenv("CHROMIUM_PATH")
 
-    # 2. Список путей для разных ОС
     paths = [
-        "/usr/bin/chromium",            # Linux (стандартный путь)
-        "/usr/bin/chromium-browser",    # Linux (альтернатива)
-        "/usr/bin/google-chrome",       # Linux (альтернатива)
+        "/usr/bin/chromium",            # Linux (Railway Docker)
+        "/usr/bin/chromium-browser",    
+        "/usr/bin/google-chrome",       
         "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe", # Windows
         "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe"
     ]
@@ -44,31 +36,34 @@ def get_chromium_path():
     for path in paths:
         if os.path.exists(path):
             return path
-    
-    return None # Если ничего не нашли, пусть Html2Image попробует найти сам
+    return None
 
-# Инициализация
+# Настройки Chromium оптимизированы под Docker контейнеры (без D-Bus и графики)
 browser_path = get_chromium_path()
-# Замените ваш блок инициализации hti на этот:
-hti = Html2Image(
-    browser_executable='/usr/bin/chromium',
-    custom_flags=[
+hti_args = {
+    'custom_flags': [
         '--no-sandbox',
         '--disable-gpu',
         '--hide-scrollbars',
-        '--disable-dev-shm-usage', # Обязательно для Docker
-        '--disable-dbus',          # Игнорирует отсутствие D-Bus
-        '--no-zygote',             # Отключает ненужные процессы
+        '--disable-dev-shm-usage', # Спасает от нехватки памяти RAM в Docker
+        '--disable-dbus',          # Подавляет системные ошибки D-Bus
+        '--no-zygote',             # Убирает лишние дочерние процессы
+        '--single-process',        # Стабильнее внутри контейнера
         '--default-background-color=eef2f3'
     ]
-)
+}
+
+if browser_path:
+    hti_args['browser_executable'] = browser_path
+
+hti = Html2Image(**hti_args)
+
 class MathMessage(BaseModel):
     chat_id: int | str
     caption: str = ""
     latex: str
 
 async def process_embedded_images(raw_text: str) -> tuple[str, str | None]:
-    # Регулярка для поиска изображений в Markdown (включая обернутые в ссылки)
     match = re.search(r'!\[.*?\]\((https?://[^\s)]+)\)', raw_text)
     img_base64 = None
     if match:
@@ -138,7 +133,7 @@ async def convert_to_katex_html(raw_text: str) -> tuple[str, bool]:
                 padding: 32px;
                 border-radius: 16px;
                 box-shadow: 0 10px 25px rgba(0, 0, 0, 0.08), 0 4px 10px rgba(0, 0, 0, 0.04);
-                width: 620px; /* Фиксируем ширину текстового блока для предсказуемого переноса */
+                width: 620px;
                 display: flex;
                 flex-direction: column;
                 gap: 20px;
@@ -162,22 +157,19 @@ async def convert_to_katex_html(raw_text: str) -> tuple[str, bool]:
                 color: #1e293b;
                 font-weight: 400;
             }}
-            
-            /* --- АДАПТИВ ДЛЯ КАРТИНКИ --- */
             .task-image {{
                 display: block;
-                max-width: 100%;       /* Картинка никогда не вылезет за пределы белой карточки */
-                max-height: 450px;     /* Ограничиваем чрезмерно высокие чертежи */
-                width: auto;           /* Сохраняем оригинальные пропорции */
+                max-width: 100%;
+                max-height: 450px;
+                width: auto;
                 height: auto;
                 border-radius: 10px;
-                margin: 10px auto 0 auto; /* Центрируем чертеж по горизонтали */
-                object-fit: contain;   /* Аккуратное вписывание */
-                background-color: #fafafa; /* Подложка на случай прозрачных PNG-чертежей */
-                border: 1px dashed #e2e8f0; /* Легкая эстетичная рамка вокруг рисунка */
-                padding: 8px;          /* Внутренний отступ для рисунка внутри подложки */
+                margin: 10px auto 0 auto;
+                object-fit: contain;
+                background-color: #fafafa;
+                border: 1px dashed #e2e8f0;
+                padding: 8px;
             }}
-            
             .katex {{
                 font-size: 1.05em;
                 color: #0f172a;
@@ -227,44 +219,58 @@ def autocrop_image(img_path: str) -> bytes:
 
 @app.post("/send_math")
 async def send_math(msg: MathMessage):
+    # Используем безопасное создание файлов во временной папке ОС /tmp
+    with tempfile.NamedTemporaryFile(suffix=".html", mode="w", encoding="utf-8", delete=False) as tf_html, \
+         tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tf_img:
+        
+        html_file = tf_html.name
+        img_file = tf_img.name
+
     try:
         html_code, has_image = await convert_to_katex_html(msg.latex)
-        
-        html_file = "temp_task.html"
-        img_file = "temp_task.png"
         
         with open(html_file, "w", encoding="utf-8") as f:
             f.write(html_code)
         
-        # Динамический расчет высоты холста:
-        # Если есть картинка, даем Chromium запас до 2200px по высоте, чтобы ничего не обрезалось.
-        # Если только текст — хватает базовых 1000px. PIL всё равно уберет лишнее.
         canvas_width = 820
         canvas_height = 2200 if has_image else 1000
         
-        hti.screenshot(html_file=html_file, save_as=img_file, size=(canvas_width, canvas_height))
+        # Запуск рендеринга с перехватом системных ворчаний Chromium
+        try:
+            hti.screenshot(html_file=html_file, save_as=img_file, size=(canvas_width, canvas_height))
+        except Exception as e:
+            # Игнорируем ошибку, если сам файл по факту успешно создался
+            if not os.path.exists(img_file):
+                print(f"DEBUG: Рендеринг завершился неудачей: {e}")
+                raise
         
-        time.sleep(0.25)
+        # Даем файловой системе 100мс зафиксировать картинку на диске
+        time.sleep(0.1)
         
-        if not os.path.exists(img_file):
-            raise HTTPException(status_code=500, detail="Файл изображения не был сгенерирован.")
+        if os.path.getsize(img_file) == 0:
+            raise FileNotFoundError("Сгенерированный файл изображения пуст.")
             
+        # Обрезка полей
         img_bytes = autocrop_image(img_file)
-            
-        if os.path.exists(html_file): os.remove(html_file)
-        if os.path.exists(img_file): os.remove(img_file)
-
+        
+        # Отправка в Telegram API
         async with httpx.AsyncClient() as client:
             files = {"photo": ("task.png", img_bytes, "image/png")}
             data = {"chat_id": msg.chat_id, "caption": msg.caption}
-            resp = await client.post(f"{TELEGRAM_API}/sendPhoto", data=data, files=files)
+            resp = await client.post(f"{TELEGRAM_API}/sendPhoto", data=data, files=files, timeout=30.0)
             
         res_data = resp.json()
         if resp.status_code != 200:
-            raise HTTPException(status_code=resp.status_code, detail=res_data)
+            print(f"DEBUG: Telegram API вернул ошибку: {res_data}")
+            raise HTTPException(status_code=resp.status_code, detail=f"Telegram Error: {res_data}")
             
-        return res_data
+        return {"status": "success", "telegram_response": res_data}
 
     except Exception as e:
+        print(f"CRITICAL Блок Исключения: {repr(e)}")
         raise HTTPException(status_code=500, detail=f"Ошибка адаптивного рендеринга: {str(e)}")
-    
+        
+    finally:
+        # Железно чистим за собой дисковый кэш, файлы удалятся в любом случае
+        if os.path.exists(html_file): os.remove(html_file)
+        if os.path.exists(img_file): os.remove(img_file)
