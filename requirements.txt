@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+sqlalchemy
+psycopg2-binary
+httpx
+beautifulsoup4
+html2image
+pillow
+python-dotenv
+boto3
+botocore
