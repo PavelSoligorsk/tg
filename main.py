@@ -21,34 +21,56 @@ if not BOT_TOKEN:
 app = FastAPI(title="KaTeX Premium Render Bot API")
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
+# Глобальные переменные для локального кэша KaTeX (чтобы рендерить без сети)
+KATEX_CSS = ""
+KATEX_JS = ""
+KATEX_AUTO_RENDER_JS = ""
+
+@app.on_event("startup")
+async def load_katex_assets():
+    """Скачивает ресурсы KaTeX один раз при старте, чтобы рендерить инлайново без CDN"""
+    global KATEX_CSS, KATEX_JS, KATEX_AUTO_RENDER_JS
+    try:
+        async with httpx.AsyncClient() as client:
+            css_res = await client.get("https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css")
+            js_res = await client.get("https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js")
+            auto_res = await client.get("https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js")
+            
+            if all(r.status_code == 200 for r in [css_res, js_res, auto_res]):
+                KATEX_CSS = css_res.text
+                KATEX_JS = js_res.text
+                KATEX_AUTO_RENDER_JS = auto_res.text
+                print("УСПЕХ: Ресурсы KaTeX успешно кэшированы локально.")
+                return
+    except Exception as e:
+        print(f"ВНИМАНИЕ: Не удалось кэшировать KaTeX локально ({e}). Будет использован стандартный CDN.")
+
 def get_chromium_path():
     if os.getenv("CHROMIUM_PATH"):
         return os.getenv("CHROMIUM_PATH")
-
     paths = [
         "/usr/bin/chromium",            # Linux (Railway Docker)
         "/usr/bin/chromium-browser",    
         "/usr/bin/google-chrome",       
-        "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe", # Windows
+        "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
         "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe"
     ]
-
     for path in paths:
         if os.path.exists(path):
             return path
     return None
 
-# Настройки Chromium оптимизированы под Docker контейнеры (без D-Bus и графики)
 browser_path = get_chromium_path()
 hti_args = {
     'custom_flags': [
+        '--headless=new',          # Использование нового стабильного headless-режима
         '--no-sandbox',
         '--disable-gpu',
         '--hide-scrollbars',
-        '--disable-dev-shm-usage', # Спасает от нехватки памяти RAM в Docker
-        '--disable-dbus',          # Подавляет системные ошибки D-Bus
-        '--no-zygote',             # Убирает лишние дочерние процессы
-        '--single-process',        # Стабильнее внутри контейнера
+        '--disable-dev-shm-usage', # Решает проблему нехватки RAM памяти в Docker
+        '--disable-dbus',          # Игнорирует отсутствие системной шины d-bus
+        '--no-zygote',
+        '--single-process',
         '--default-background-color=eef2f3'
     ]
 }
@@ -112,14 +134,19 @@ async def convert_to_katex_html(raw_text: str) -> tuple[str, bool]:
     text_content, badge_html = extract_and_format_badge(text_content)
     img_html = f'<img src="{embedded_img}" class="task-image">' if embedded_img else ''
 
+    # Если ресурсы загружены в память — вшиваем их напрямую (inline), иначе берем CDN
+    css_include = f"<style>{KATEX_CSS}</style>" if KATEX_CSS else '<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">'
+    js_include = f"<script>{KATEX_JS}</script>" if KATEX_JS else '<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>'
+    auto_render_include = f"<script>{KATEX_AUTO_RENDER_JS}</script>" if KATEX_AUTO_RENDER_JS else '<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>'
+
     html_template = f"""
     <!DOCTYPE html>
     <html style="background-color: #eef2f3; margin: 0; padding: 0;">
     <head>
         <meta charset="utf-8">
-        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
-        <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
-        <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+        {css_include}
+        {js_include}
+        {auto_render_include}
         <style>
             body {{
                 margin: 0;
@@ -183,6 +210,7 @@ async def convert_to_katex_html(raw_text: str) -> tuple[str, bool]:
             {img_html}
         </div>
         <script>
+            // Моментальный синхронный рендеринг математики
             renderMathInElement(document.getElementById("math-content"), {{
                 delimiters: [
                     {{left: "$$", right: "$$", display: true}},
@@ -219,7 +247,7 @@ def autocrop_image(img_path: str) -> bytes:
 
 @app.post("/send_math")
 async def send_math(msg: MathMessage):
-    # Используем безопасное создание файлов во временной папке ОС /tmp
+    # Работаем строго во временной директории /tmp/
     with tempfile.NamedTemporaryFile(suffix=".html", mode="w", encoding="utf-8", delete=False) as tf_html, \
          tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tf_img:
         
@@ -235,22 +263,24 @@ async def send_math(msg: MathMessage):
         canvas_width = 820
         canvas_height = 2200 if has_image else 1000
         
-        # Запуск рендеринга с перехватом системных ворчаний Chromium
+        # Рендерим через явное указание локального пути для стабильности в Linux
         try:
             hti.screenshot(html_file=html_file, save_as=img_file, size=(canvas_width, canvas_height))
         except Exception as e:
-            # Игнорируем ошибку, если сам файл по факту успешно создался
             if not os.path.exists(img_file):
-                print(f"DEBUG: Рендеринг завершился неудачей: {e}")
+                print(f"DEBUG: Провал вызова screenshot: {e}")
                 raise
+
+        # Короткое ожидание финализации записи на диск Linux-контейнера
+        time.sleep(0.3)
         
-        # Даем файловой системе 100мс зафиксировать картинку на диске
-        time.sleep(0.1)
-        
-        if os.path.getsize(img_file) == 0:
-            raise FileNotFoundError("Сгенерированный файл изображения пуст.")
+        # Если файл по какой-то причине отсутствует или пуст — даем ему вторую попытку с задержкой
+        if not os.path.exists(img_file) or os.path.getsize(img_file) == 0:
+            time.sleep(0.7)
+            if not os.path.exists(img_file) or os.path.getsize(img_file) == 0:
+                raise FileNotFoundError("Браузер не смог сгенерировать непустой скриншот (0 байт).")
             
-        # Обрезка полей
+        # Обрезка полей изображения
         img_bytes = autocrop_image(img_file)
         
         # Отправка в Telegram API
@@ -261,7 +291,7 @@ async def send_math(msg: MathMessage):
             
         res_data = resp.json()
         if resp.status_code != 200:
-            print(f"DEBUG: Telegram API вернул ошибку: {res_data}")
+            print(f"DEBUG: Ошибка Telegram API: {res_data}")
             raise HTTPException(status_code=resp.status_code, detail=f"Telegram Error: {res_data}")
             
         return {"status": "success", "telegram_response": res_data}
@@ -271,6 +301,6 @@ async def send_math(msg: MathMessage):
         raise HTTPException(status_code=500, detail=f"Ошибка адаптивного рендеринга: {str(e)}")
         
     finally:
-        # Железно чистим за собой дисковый кэш, файлы удалятся в любом случае
+        # Гарантированное удаление временных файлов с диска
         if os.path.exists(html_file): os.remove(html_file)
         if os.path.exists(img_file): os.remove(img_file)
