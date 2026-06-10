@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import httpx
-import markdown  # Добавляем для парсинга маркдаун-таблиц
+import markdown  
 from bs4 import BeautifulSoup
 from PIL import Image, ImageChops
 
@@ -53,7 +53,6 @@ def get_chromium_path():
             return path
     return None
 
-# УЛУЧШЕНИЕ КАЧЕСТВА: Добавлен флаг --force-device-scale-factor=2 (Рендеринг в 2К качестве)
 CHROMIUM_FLAGS = [
     "--headless", "--no-sandbox", "--disable-setuid-sandbox",
     "--disable-gpu", "--disable-dev-shm-usage", "--disable-software-rasterizer",
@@ -69,6 +68,7 @@ class MathMessage(BaseModel):
     options: list[str] = []
     correct_option_ids: list[int] = [] 
     difficulty: int
+    answer: str = ""  # Добавляем поле ответа (для вывода в открытых вопросах)
 
 def extract_and_format_badge(text: str) -> tuple[str, str]:
     match = re.search(r'^(?:<strong>)?([А-Яа-яA-Za-z][-–]?\d+)\.?(?:</strong>)?\s*', text)
@@ -78,16 +78,23 @@ def extract_and_format_badge(text: str) -> tuple[str, str]:
     return text, ""
 
 async def convert_to_katex_html(raw_text: str, options: list[str]) -> tuple[str, bool]:
-    # 1. Извлекаем номер задачи
     raw_text, badge_html = extract_and_format_badge(raw_text)
-
-    # 2. ЖЕСТКИЙ ФИКС: Заменяем текстовые \n на реальные переносы строк
     raw_text = raw_text.replace('\\n', '\n')
 
-    # 3. Умная отбивка таблиц пустыми строками со всех сторон
-    lines = raw_text.split('\n')
-    processed_lines = []
+    # --- ЗАЩИТА LATEX СИСТЕМ И СОВОКУПНОСТЕЙ ОТ MARKDOWN ---
+    # Вырезаем блоки $$...$$ и $...$ во временный массив, чтобы markdown их не побил
+    latex_blocks = []
+    def placeholder_repl(match):
+        latex_blocks.append(match.group(0))
+        return f""
     
+    # Сначала защищаем дисплейные формулы $$, затем инлайновые $
+    protected_text = re.sub(r'\$\$.*?\$\$', placeholder_repl, raw_text, flags=re.DOTALL)
+    protected_text = re.sub(r'\$.*?\$', placeholder_repl, protected_text)
+
+    # Умная отбивка таблиц пустыми строками
+    lines = protected_text.split('\n')
+    processed_lines = []
     for i, line in enumerate(lines):
         stripped = line.strip()
         if stripped.startswith('|'):
@@ -95,23 +102,19 @@ async def convert_to_katex_html(raw_text: str, options: list[str]) -> tuple[str,
                 processed_lines.append('')
         elif i > 0 and lines[i-1].strip().startswith('|') and stripped != '':
             processed_lines.append('')
-            
         processed_lines.append(line)
 
-    raw_text = '\n'.join(processed_lines)
+    protected_text = '\n'.join(processed_lines)
 
-    # 4. Конвертируем в HTML
-    html_content = markdown.markdown(raw_text, extensions=['tables'])
+    # Переводим безопасный текст в HTML
+    html_content = markdown.markdown(protected_text, extensions=['tables'])
     
-    # --- ДЕБАГ ДЛЯ КОНСОЛИ ---
-    print("\n====== СГЕНЕРИРОВАННЫЙ HTML ======")
-    print(html_content)
-    print("==================================\n")
+    # Возвращаем LaTeX блоки на их законные места
+    for idx, block in enumerate(latex_blocks):
+        html_content = html_content.replace(f"", block)
 
-    # Флаг для динамического увеличения высоты холста
     has_image = "img" in html_content or "<table" in html_content or len(options) > 0
 
-    # 5. Прогоняем через BeautifulSoup
     soup = BeautifulSoup(html_content, "html.parser")
     
     async with httpx.AsyncClient() as client:
@@ -130,15 +133,28 @@ async def convert_to_katex_html(raw_text: str, options: list[str]) -> tuple[str,
 
     text_content = soup.decode_contents()
     
-    # 6. Генерируем HTML-сетку вариантов ответов
+    # Генерируем HTML вариантов ответов
     options_html = ""
     if options:
         options_html = '<div class="options-grid">'
         markers = ["А", "Б", "В", "Г", "Д", "Е", "Ж", "З", "И", "К"]
         for idx, opt in enumerate(options):
             marker = markers[idx] if idx < len(markers) else f"{idx + 1}"
-            opt_html = markdown.markdown(opt)
+            
+            # Точно так же защищаем формулы внутри вариантов ответов
+            opt_latex_blocks = []
+            def opt_repl(m):
+                opt_latex_blocks.append(m.group(0))
+                return f""
+            
+            p_opt = re.sub(r'\$\$.*?\$\$', opt_repl, opt, flags=re.DOTALL)
+            p_opt = re.sub(r'\$.*?\$', opt_repl, p_opt)
+            
+            opt_html = markdown.markdown(p_opt)
             opt_html = re.sub(r'^<p>|</p>$', '', opt_html).strip()
+            
+            for o_idx, o_block in enumerate(opt_latex_blocks):
+                opt_html = opt_html.replace(f"", o_block)
             
             options_html += f"""
             <div class="option-item">
@@ -152,7 +168,6 @@ async def convert_to_katex_html(raw_text: str, options: list[str]) -> tuple[str,
     js_include = f"<script>{GLOBAL_ASSETS['js']}</script>" if GLOBAL_ASSETS['js'] else '<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>'
     auto_render_include = f"<script>{GLOBAL_ASSETS['auto_js']}</script>" if GLOBAL_ASSETS['auto_js'] else '<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>'
 
-    # СИММЕТРИЯ: Обновлены стили html, body и .card для идеальных и безопасных отступов со всех сторон
     html_template = f"""
     <!DOCTYPE html>
     <html style="background-color: #eef2f3; margin: 0; padding: 0; box-sizing: border-box;">
@@ -161,46 +176,19 @@ async def convert_to_katex_html(raw_text: str, options: list[str]) -> tuple[str,
         {css_include} {js_include} {auto_render_include}
         <style>
             *, *:before, *:after {{ box-sizing: inherit; }}
-            
-            body {{ 
-                margin: 0; 
-                padding: 40px; 
-                display: flex; 
-                justify-content: center; 
-                align-items: flex-start; 
-                background-color: #eef2f3; 
-                width: 740px; /* Фиксируем ширину body под размер вьюпорта с учетом отступов */
-            }}
-            
-            .card {{ 
-                font-family: 'Inter', system-ui, sans-serif; 
-                background-color: #ffffff; 
-                padding: 32px; 
-                border-radius: 16px; 
-                box-shadow: 0 10px 25px rgba(0,0,0,0.08); 
-                width: 100%; /* Занимает всю доступную ширину внутри body (660px чистого размера) */
-                max-width: 660px;
-                display: flex; 
-                flex-direction: column; 
-                gap: 24px; 
-                border: 1px solid rgba(0,0,0,0.03);
-                word-wrap: break-word;
-            }}
-            
+            body {{ margin: 0; padding: 40px; display: flex; justify-content: center; align-items: flex-start; background-color: #eef2f3; width: 740px; }}
+            .card {{ font-family: 'Inter', system-ui, sans-serif; background-color: #ffffff; padding: 32px; border-radius: 16px; box-shadow: 0 10px 25px rgba(0,0,0,0.08); width: 100%; max-width: 660px; display: flex; flex-direction: column; gap: 24px; border: 1px solid rgba(0,0,0,0.03); word-wrap: break-word; }}
             .task-badge {{ align-self: flex-start; background: linear-gradient(135deg, #2563eb, #1d4ed8); color: #ffffff; font-weight: 700; font-size: 16px; padding: 6px 14px; border-radius: 8px; text-transform: uppercase; }}
             .text-container {{ font-size: 22px; line-height: 1.65; color: #1e293b; font-weight: 400; }}
-            
             table {{ width: 100%; border-collapse: separate; border-spacing: 0; margin: 24px 0; font-size: 19px; background-color: #f8fafc; border-radius: 12px; overflow: hidden; border: 1px solid #e2e8f0; table-layout: fixed; }}
             th, td {{ padding: 14px 16px; vertical-align: middle; text-align: center; border-bottom: 1px solid #e2e8f0; border-right: 1px solid #e2e8f0; word-wrap: break-word; }}
             th:last-child, td:last-child {{ border-right: none; }}
             tr:last-child td {{ border-bottom: none; }}
             th {{ background-color: #f1f5f9; color: #1e293b; font-weight: 700; }}
             td {{ background-color: #ffffff; color: #334155; }}
-            
             .task-rendered-img {{ display: block; max-width: 100%; max-height: 420px; width: auto; height: auto; border-radius: 8px; margin: 12px auto; object-fit: contain; }}
             td .task-rendered-img {{ max-height: 140px; margin: 4px auto; border-radius: 4px; }}
             td p {{ margin: 0; }}
-
             .options-grid {{ display: flex; flex-direction: column; gap: 12px; margin-top: 8px; border-top: 1px dashed #e2e8f0; padding-top: 20px; }}
             .option-item {{ display: flex; align-items: center; gap: 14px; padding: 12px 16px; background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; font-size: 20px; color: #334155; }}
             .option-marker {{ display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; background-color: #e2e8f0; color: #1e293b; font-weight: 700; border-radius: 50%; font-size: 16px; flex-shrink: 0; }}
@@ -251,7 +239,6 @@ async def send_math(msg: MathMessage):
         with open(html_file, "w", encoding="utf-8") as f:
             f.write(html_code)
             
-        # Корректируем ширину окна Chromium под общую ширину body (740px)
         canvas_width = 740
         canvas_height = 3200 if has_image else 1200
         browser_exec = get_chromium_path()
@@ -265,18 +252,36 @@ async def send_math(msg: MathMessage):
             
         img_bytes = autocrop_image(img_file)
         
+        # --- МОДИФИКАЦИЯ CAPTION (Вывод ответов) ---
+        final_caption = msg.caption
+        markers = ["А", "Б", "В", "Г", "Д", "Е", "Ж", "З", "И", "К"]
+        
+        if not msg.is_quiz:
+            # Для открытых вопросов пишем ответ снизу
+            if msg.answer:
+                final_caption += f"\n\n🔑 **Правильный ответ:** {msg.answer}"
+        else:
+            # Для закрытых вопросов с множественным выбором (более 1 ответа)
+            if len(msg.correct_option_ids) > 1:
+                correct_letters = [markers[i] for i in msg.correct_option_ids if i < len(markers)]
+                final_caption += f"\n\n✅ **Правильные варианты:** {', '.join(correct_letters)}"
+
         async with httpx.AsyncClient() as client:
             files = {"photo": ("task.png", img_bytes, "image/png")}
-            photo_resp = await client.post(f"{TELEGRAM_API}/sendPhoto", data={"chat_id": msg.chat_id, "caption": msg.caption}, files=files, timeout=30.0)
+            photo_resp = await client.post(
+                f"{TELEGRAM_API}/sendPhoto", 
+                data={"chat_id": msg.chat_id, "caption": final_caption, "parse_mode": "Markdown"}, 
+                files=files, 
+                timeout=30.0
+            )
             if photo_resp.status_code != 200: raise HTTPException(status_code=400, detail=photo_resp.text)
             photo_res_data = photo_resp.json()
 
+            # --- ОТПРАВКА ОПРОСА ---
             if msg.is_quiz and msg.options:
                 if 2 <= len(msg.options) <= 10:
                     clean_options = [opt[:100] for opt in msg.options] 
                     is_multiple = len(msg.correct_option_ids) > 1
-                    
-                    markers = ["А", "Б", "В", "Г", "Д", "Е", "Ж", "З", "И", "К"]
                     poll_options = [f"Вариант {markers[i]}" for i in range(len(clean_options))]
                     
                     if is_multiple:
