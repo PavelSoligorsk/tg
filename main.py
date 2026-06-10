@@ -81,18 +81,17 @@ async def convert_to_katex_html(raw_text: str, options: list[str]) -> tuple[str,
     raw_text, badge_html = extract_and_format_badge(raw_text)
     raw_text = raw_text.replace('\\n', '\n')
 
-    # --- ЗАЩИТА LATEX СИСТЕМ И СОВОКУПНОСТЕЙ ОТ MARKDOWN ---
-    # Вырезаем блоки $$...$$ и $...$ во временный массив, чтобы markdown их не побил
+    # --- ЗАЩИТА LATEX ---
     latex_blocks = []
     def placeholder_repl(match):
         latex_blocks.append(match.group(0))
-        return f""
+        # Используем безопасный текстовый маркер вместо HTML-комментариев
+        return f"@@LATEX_BLOCK_{len(latex_blocks)-1}@@"
     
-    # Сначала защищаем дисплейные формулы $$, затем инлайновые $
     protected_text = re.sub(r'\$\$.*?\$\$', placeholder_repl, raw_text, flags=re.DOTALL)
     protected_text = re.sub(r'\$.*?\$', placeholder_repl, protected_text)
 
-    # Умная отбивка таблиц пустыми строками
+    # Отбивка таблиц
     lines = protected_text.split('\n')
     processed_lines = []
     for i, line in enumerate(lines):
@@ -106,12 +105,12 @@ async def convert_to_katex_html(raw_text: str, options: list[str]) -> tuple[str,
 
     protected_text = '\n'.join(processed_lines)
 
-    # Переводим безопасный текст в HTML
+    # Парсим Markdown
     html_content = markdown.markdown(protected_text, extensions=['tables'])
     
-    # Возвращаем LaTeX блоки на их законные места
+    # ВОЗВРАЩАЕМ ФОРМУЛЫ ОБРАТНО
     for idx, block in enumerate(latex_blocks):
-        html_content = html_content.replace(f"", block)
+        html_content = html_content.replace(f"@@LATEX_BLOCK_{idx}@@", block)
 
     has_image = "img" in html_content or "<table" in html_content or len(options) > 0
 
@@ -133,7 +132,6 @@ async def convert_to_katex_html(raw_text: str, options: list[str]) -> tuple[str,
 
     text_content = soup.decode_contents()
     
-    # Генерируем HTML вариантов ответов
     options_html = ""
     if options:
         options_html = '<div class="options-grid">'
@@ -141,11 +139,11 @@ async def convert_to_katex_html(raw_text: str, options: list[str]) -> tuple[str,
         for idx, opt in enumerate(options):
             marker = markers[idx] if idx < len(markers) else f"{idx + 1}"
             
-            # Точно так же защищаем формулы внутри вариантов ответов
+            # ТАКАЯ ЖЕ ЗАЩИТА ДЛЯ ВАРИАНТОВ ОТВЕТОВ
             opt_latex_blocks = []
             def opt_repl(m):
                 opt_latex_blocks.append(m.group(0))
-                return f""
+                return f"@@OPT_BLOCK_{len(opt_latex_blocks)-1}@@"
             
             p_opt = re.sub(r'\$\$.*?\$\$', opt_repl, opt, flags=re.DOTALL)
             p_opt = re.sub(r'\$.*?\$', opt_repl, p_opt)
@@ -153,8 +151,9 @@ async def convert_to_katex_html(raw_text: str, options: list[str]) -> tuple[str,
             opt_html = markdown.markdown(p_opt)
             opt_html = re.sub(r'^<p>|</p>$', '', opt_html).strip()
             
+            # ВОЗВРАЩАЕМ ФОРМУЛЫ В ВАРИАНТЫ
             for o_idx, o_block in enumerate(opt_latex_blocks):
-                opt_html = opt_html.replace(f"", o_block)
+                opt_html = opt_html.replace(f"@@OPT_BLOCK_{o_idx}@@", o_block)
             
             options_html += f"""
             <div class="option-item">
