@@ -53,10 +53,12 @@ def get_chromium_path():
             return path
     return None
 
+# УЛУЧШЕНИЕ КАЧЕСТВА: Добавлен флаг --force-device-scale-factor=2 (Рендеринг в 2К качестве)
 CHROMIUM_FLAGS = [
     "--headless", "--no-sandbox", "--disable-setuid-sandbox",
     "--disable-gpu", "--disable-dev-shm-usage", "--disable-software-rasterizer",
-    "--hide-scrollbars", "--disable-dbus", "--no-zygote", "--default-background-color=eef2f3"
+    "--hide-scrollbars", "--disable-dbus", "--no-zygote", "--default-background-color=eef2f3",
+    "--force-device-scale-factor=2"
 ]
 
 class MathMessage(BaseModel):
@@ -80,7 +82,6 @@ async def convert_to_katex_html(raw_text: str, options: list[str]) -> tuple[str,
     raw_text, badge_html = extract_and_format_badge(raw_text)
 
     # 2. ЖЕСТКИЙ ФИКС: Заменяем текстовые \n на реальные переносы строк
-    # (Обязательно, если шлешь JSON через API)
     raw_text = raw_text.replace('\\n', '\n')
 
     # 3. Умная отбивка таблиц пустыми строками со всех сторон
@@ -89,13 +90,9 @@ async def convert_to_katex_html(raw_text: str, options: list[str]) -> tuple[str,
     
     for i, line in enumerate(lines):
         stripped = line.strip()
-        
-        # Если ТЕКУЩАЯ строка начинается с |, а предыдущая была обычным текстом -> отбиваем сверху
         if stripped.startswith('|'):
             if i > 0 and processed_lines[-1].strip() != '' and not processed_lines[-1].strip().startswith('|'):
                 processed_lines.append('')
-                
-        # Если ТЕКУЩАЯ строка - обычный текст, а ПРЕДЫДУЩАЯ была таблицей -> отбиваем снизу
         elif i > 0 and lines[i-1].strip().startswith('|') and stripped != '':
             processed_lines.append('')
             
@@ -155,20 +152,46 @@ async def convert_to_katex_html(raw_text: str, options: list[str]) -> tuple[str,
     js_include = f"<script>{GLOBAL_ASSETS['js']}</script>" if GLOBAL_ASSETS['js'] else '<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>'
     auto_render_include = f"<script>{GLOBAL_ASSETS['auto_js']}</script>" if GLOBAL_ASSETS['auto_js'] else '<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>'
 
+    # СИММЕТРИЯ: Обновлены стили html, body и .card для идеальных и безопасных отступов со всех сторон
     html_template = f"""
     <!DOCTYPE html>
-    <html style="background-color: #eef2f3; margin: 0; padding: 0;">
+    <html style="background-color: #eef2f3; margin: 0; padding: 0; box-sizing: border-box;">
     <head>
         <meta charset="utf-8">
         {css_include} {js_include} {auto_render_include}
         <style>
-            body {{ margin: 0; padding: 40px; display: inline-block; background-color: #eef2f3; }}
-            .card {{ font-family: 'Inter', system-ui, sans-serif; background-color: #ffffff; padding: 32px; border-radius: 16px; box-shadow: 0 10px 25px rgba(0,0,0,0.08); width: 660px; display: flex; flex-direction: column; gap: 24px; border: 1px solid rgba(0,0,0,0.03); }}
+            *, *:before, *:after {{ box-sizing: inherit; }}
+            
+            body {{ 
+                margin: 0; 
+                padding: 40px; 
+                display: flex; 
+                justify-content: center; 
+                align-items: flex-start; 
+                background-color: #eef2f3; 
+                width: 740px; /* Фиксируем ширину body под размер вьюпорта с учетом отступов */
+            }}
+            
+            .card {{ 
+                font-family: 'Inter', system-ui, sans-serif; 
+                background-color: #ffffff; 
+                padding: 32px; 
+                border-radius: 16px; 
+                box-shadow: 0 10px 25px rgba(0,0,0,0.08); 
+                width: 100%; /* Занимает всю доступную ширину внутри body (660px чистого размера) */
+                max-width: 660px;
+                display: flex; 
+                flex-direction: column; 
+                gap: 24px; 
+                border: 1px solid rgba(0,0,0,0.03);
+                word-wrap: break-word;
+            }}
+            
             .task-badge {{ align-self: flex-start; background: linear-gradient(135deg, #2563eb, #1d4ed8); color: #ffffff; font-weight: 700; font-size: 16px; padding: 6px 14px; border-radius: 8px; text-transform: uppercase; }}
             .text-container {{ font-size: 22px; line-height: 1.65; color: #1e293b; font-weight: 400; }}
             
-            table {{ width: 100%; border-collapse: separate; border-spacing: 0; margin: 24px 0; font-size: 19px; background-color: #f8fafc; border-radius: 12px; overflow: hidden; border: 1px solid #e2e8f0; }}
-            th, td {{ padding: 14px 16px; vertical-align: middle; text-align: center; border-bottom: 1px solid #e2e8f0; border-right: 1px solid #e2e8f0; }}
+            table {{ width: 100%; border-collapse: separate; border-spacing: 0; margin: 24px 0; font-size: 19px; background-color: #f8fafc; border-radius: 12px; overflow: hidden; border: 1px solid #e2e8f0; table-layout: fixed; }}
+            th, td {{ padding: 14px 16px; vertical-align: middle; text-align: center; border-bottom: 1px solid #e2e8f0; border-right: 1px solid #e2e8f0; word-wrap: break-word; }}
             th:last-child, td:last-child {{ border-right: none; }}
             tr:last-child td {{ border-bottom: none; }}
             th {{ background-color: #f1f5f9; color: #1e293b; font-weight: 700; }}
@@ -204,6 +227,7 @@ async def convert_to_katex_html(raw_text: str, options: list[str]) -> tuple[str,
     </html>
     """
     return html_template, has_image
+
 def autocrop_image(img_path: str) -> bytes:
     img = Image.open(img_path).convert("RGB")
     bg = Image.new(img.mode, img.size, (238, 242, 243))
@@ -227,7 +251,8 @@ async def send_math(msg: MathMessage):
         with open(html_file, "w", encoding="utf-8") as f:
             f.write(html_code)
             
-        canvas_width = 840
+        # Корректируем ширину окна Chromium под общую ширину body (740px)
+        canvas_width = 740
         canvas_height = 3200 if has_image else 1200
         browser_exec = get_chromium_path()
         if not browser_exec: raise RuntimeError("Chromium не найден!")
