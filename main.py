@@ -174,30 +174,147 @@ async def convert_to_katex_html(raw_text: str, options: list[str]) -> tuple[str,
 
     html_template = f"""
     <!DOCTYPE html>
-    <html style="background-color: #eef2f3; margin: 0; padding: 0; box-sizing: border-box;">
+    <html style="background-color: #f1f5f9; margin: 0; padding: 0; box-sizing: border-box;">
     <head>
         <meta charset="utf-8">
         {css_include} {js_include} {auto_render_include}
         <style>
             *, *:before, *:after {{ box-sizing: inherit; }}
-            body {{ margin: 0; padding: 40px; display: flex; justify-content: center; align-items: flex-start; background-color: #eef2f3; width: 740px; }}
-            .card {{ font-family: 'Inter', system-ui, sans-serif; background-color: #ffffff; padding: 32px; border-radius: 16px; box-shadow: 0 10px 25px rgba(0,0,0,0.08); width: 100%; max-width: 660px; display: flex; flex-direction: column; gap: 24px; border: 1px solid rgba(0,0,0,0.03); word-wrap: break-word; }}
-            .task-badge {{ align-self: flex-start; background: linear-gradient(135deg, #2563eb, #1d4ed8); color: #ffffff; font-weight: 700; font-size: 16px; padding: 6px 14px; border-radius: 8px; text-transform: uppercase; }}
-            .text-container {{ font-size: 22px; line-height: 1.65; color: #1e293b; font-weight: 400; }}
-            table {{ width: 100%; border-collapse: separate; border-spacing: 0; margin: 24px 0; font-size: 19px; background-color: #f8fafc; border-radius: 12px; overflow: hidden; border: 1px solid #e2e8f0; table-layout: fixed; }}
-            th, td {{ padding: 14px 16px; vertical-align: middle; text-align: center; border-bottom: 1px solid #e2e8f0; border-right: 1px solid #e2e8f0; word-wrap: break-word; }}
-            th:last-child, td:last-child {{ border-right: none; }}
-            tr:last-child td {{ border-bottom: none; }}
-            th {{ background-color: #f1f5f9; color: #1e293b; font-weight: 700; }}
+            
+            /* Главный холст: приятный софт-фон, убрали лишние зазоры */
+            body {{ 
+                margin: 0; 
+                padding: 35px; 
+                display: flex; 
+                justify-content: center; 
+                align-items: flex-start; 
+                background-color: #f1f5f9; 
+                width: 740px; 
+            }}
+            
+            /* Белая карточка: сделали тень глубже, а углы чуть более стильными */
+            .card {{ 
+                font-family: 'Inter', system-ui, -apple-system, sans-serif; 
+                background-color: #ffffff; 
+                padding: 36px; 
+                border-radius: 20px; 
+                box-shadow: 0 12px 30px rgba(15, 23, 42, 0.06); 
+                width: 100%; 
+                max-width: 670px; 
+                display: flex; 
+                flex-direction: column; 
+                gap: 28px; 
+                border: 1px solid rgba(226, 232, 240, 0.8); 
+                word-wrap: break-word; 
+            }}
+            
+            /* Бейдж: добавили скругление, современный градиент и легкое свечение */
+            .task-badge {{ 
+                align-self: flex-start; 
+                background: linear-gradient(135deg, #3b82f6, #1d4ed8); 
+                color: #ffffff; 
+                font-weight: 700; 
+                font-size: 15px; 
+                letter-spacing: 0.5px;
+                padding: 6px 16px; 
+                border-radius: 10px; 
+                text-transform: uppercase; 
+                box-shadow: 0 4px 12px rgba(37, 99, 235, 0.2);
+            }}
+            
+            /* Контейнер текста: глубокий Slate-цвет, идеальный размер для чтения */
+            .text-container {{ 
+                font-size: 22px; 
+                line-height: 1.7; 
+                color: #0f172a; 
+                font-weight: 400; 
+            }}
+            
+            /* Таблицы: сделали полностью плоскими и чистыми, убрали "грязные" контуры */
+            table {{ 
+                width: 100%; 
+                border-collapse: collapse; 
+                margin: 24px 0; 
+                font-size: 19px; 
+                background-color: #f8fafc; 
+                border-radius: 14px; 
+                overflow: hidden; 
+                border: 1px solid #e2e8f0; 
+                table-layout: fixed; 
+            }}
+            th, td {{ 
+                padding: 16px; 
+                vertical-align: middle; 
+                text-align: center; 
+                border: 1px solid #e2e8f0; 
+                word-wrap: break-word; 
+            }}
+            th {{ background-color: #f1f5f9; color: #0f172a; font-weight: 700; }}
             td {{ background-color: #ffffff; color: #334155; }}
-            .task-rendered-img {{ display: block; max-width: 100%; max-height: 420px; width: auto; height: auto; border-radius: 8px; margin: 12px auto; object-fit: contain; }}
-            td .task-rendered-img {{ max-height: 140px; margin: 4px auto; border-radius: 4px; }}
+            
+            /* Рендеринг картинок внутри задачи */
+            .task-rendered-img {{ 
+                display: block; 
+                max-width: 100%; 
+                max-height: 420px; 
+                width: auto; 
+                height: auto; 
+                border-radius: 12px; 
+                margin: 16px auto; 
+                object-fit: contain; 
+            }}
+            td .task-rendered-img {{ max-height: 140px; margin: 4px auto; border-radius: 6px; }}
             td p {{ margin: 0; }}
-            .options-grid {{ display: flex; flex-direction: column; gap: 12px; margin-top: 8px; border-top: 1px dashed #e2e8f0; padding-top: 20px; }}
-            .option-item {{ display: flex; align-items: center; gap: 14px; padding: 12px 16px; background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; font-size: 20px; color: #334155; }}
-            .option-marker {{ display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; background-color: #e2e8f0; color: #1e293b; font-weight: 700; border-radius: 50%; font-size: 16px; flex-shrink: 0; }}
+            
+            /* Сетка вариантов: аккуратный разделитель */
+            .options-grid {{ 
+                display: flex; 
+                flex-direction: column; 
+                gap: 14px; 
+                margin-top: 4px; 
+                border-top: 2px dashed #f1f5f9; 
+                padding-top: 24px; 
+            }}
+            
+            /* Элемент ответа: сделали фон белым, добавили легкую рамку — выглядит премиально */
+            .option-item {{ 
+                display: flex; 
+                align-items: center; 
+                gap: 16px; 
+                padding: 14px 20px; 
+                background-color: #ffffff; 
+                border: 1px solid #e2e8f0; 
+                border-radius: 12px; 
+                font-size: 20px; 
+                color: #334155; 
+                box-shadow: 0 2px 4px rgba(0, 0, 0, 0.01);
+            }}
+            
+            /* Маркеры (А, Б, В...): стильный контрастный кружок */
+            .option-marker {{ 
+                display: flex; 
+                align-items: center; 
+                justify-content: center; 
+                width: 36px; 
+                height: 36px; 
+                background-color: #f1f5f9; 
+                color: #2563eb; 
+                font-weight: 700; 
+                border-radius: 50%; 
+                font-size: 16px; 
+                flex-shrink: 0; 
+            }}
             .option-text p {{ margin: 0; }}
-            .katex {{ font-size: 1.05em; color: #0f172a; }}
+            
+            /* НАСТРОЙКА KATEX: формулы чуть крупнее, четче цвет + фикс вертикальных линий */
+            .katex {{ 
+                font-size: 1.08em; 
+                color: #020617; 
+            }}
+            /* Убираем любые косяки со смещением скобок в системах уравнений */
+            .katex .brace {{
+                font-family: KaTeX_Main, 'Courier New', monospace !important;
+            }}
         </style>
     </head>
     <body>
@@ -218,6 +335,7 @@ async def convert_to_katex_html(raw_text: str, options: list[str]) -> tuple[str,
     </body>
     </html>
     """
+
     return html_template, has_image
 
 def autocrop_image(img_path: str) -> bytes:
