@@ -208,6 +208,7 @@ async def send_math(msg: MathMessage):
             
         img_bytes = autocrop_image(img_file)
         
+        # --- ОТПРАВКА В TELEGRAM ---
         async with httpx.AsyncClient() as client:
             # Отправляем карточку
             files = {"photo": ("task.png", img_bytes, "image/png")}
@@ -215,20 +216,26 @@ async def send_math(msg: MathMessage):
             if photo_resp.status_code != 200: raise HTTPException(status_code=400, detail=photo_resp.text)
             photo_res_data = photo_resp.json()
 
-            # Обработка опроса/викторины
+            # Обработка опроса/викторины с валидацией длины массива
             if msg.is_quiz and msg.options:
-                clean_options = [opt[:100] for opt in msg.options[:10]] # Валидация длин строк TG
-                if len(clean_options) >= 2:
+                # 1. Валидация количества вариантов: Telegram строго принимает от 2 до 10
+                if 2 <= len(msg.options) <= 10:
+                    # Обрезаем строки вариантов до 100 символов (лимит Telegram API на один option)
+                    clean_options = [opt[:100] for opt in msg.options] 
                     
                     # ПРОВЕРКА: Сколько правильных ответов пришло?
                     is_multiple = len(msg.correct_option_ids) > 1
+                    
+                    # Генерируем маркеры для кнопок опроса (А, Б, В...) на основе реального количества вариантов
+                    markers = ["А", "Б", "В", "Г", "Д", "Е", "Ж", "З", "И", "К"]
+                    poll_options = [f"Вариант {markers[i]}" for i in range(len(clean_options))]
                     
                     if is_multiple:
                         # Если правильных ответов несколько — переключаемся на 'regular' с множественным выбором
                         quiz_data = {
                             "chat_id": msg.chat_id,
                             "question": "Выберите правильные ответы (их несколько) 👇",
-                            "options": [f"Вариант {m}" for m in ["А", "Б", "В", "Г", "Д", "Е", "Ж", "З", "И", "К"][:len(clean_options)]],
+                            "options": poll_options,
                             "type": "regular",
                             "allows_multiple_answers": True,
                             "is_anonymous": True
@@ -236,10 +243,15 @@ async def send_math(msg: MathMessage):
                     else:
                         # Если ответ один — оставляем классический интерактивный Quiz
                         single_id = msg.correct_option_ids[0] if msg.correct_option_ids else 0
+                        
+                        # Защита: индекс правильного ответа не должен выходить за границы массива вариантов
+                        if single_id >= len(clean_options):
+                            single_id = 0
+                            
                         quiz_data = {
                             "chat_id": msg.chat_id,
                             "question": "Выберите правильный ответ 👇",
-                            "options": [f"Вариант {m}" for m in ["А", "Б", "В", "Г", "Д", "Е", "Ж", "З", "И", "К"][:len(clean_options)]],
+                            "options": poll_options,
                             "type": "quiz",
                             "correct_option_id": single_id,
                             "is_anonymous": True
@@ -248,6 +260,11 @@ async def send_math(msg: MathMessage):
                     quiz_resp = await client.post(f"{TELEGRAM_API}/sendPoll", json=quiz_data, timeout=20.0)
                     if quiz_resp.status_code == 200:
                         photo_res_data["attached_quiz"] = quiz_resp.json()
+                    else:
+                        print(f"DEBUG Ошибка sendPoll API: {quiz_resp.text}")
+                else:
+                    # Логируем проблему в консоль рендер-бота, но не крашим бэкенд
+                    print(f"ВНИМАНИЕ: Опрос пропущен. Количество вариантов ({len(msg.options)}) вне лимитов Telegram (2-10).")
 
             return {"status": "success", "telegram_response": photo_res_data}
 
