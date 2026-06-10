@@ -76,14 +76,17 @@ def extract_and_format_badge(text: str) -> tuple[str, str]:
     return text, ""
 
 async def convert_to_katex_html(raw_text: str, options: list[str]) -> tuple[str, bool]:
-    # 1. Конвертируем Markdown (включая таблицы) в HTML. 
-    # Расширение 'tables' отвечает за обработку структуры из символов '|'
+    # 1. Сначала извлекаем номер задачи (А1, В10) из абсолютно сырого текста,
+    # пока markdown-парсер не добавил туда свои теги параграфов <p>
+    raw_text, badge_html = extract_and_format_badge(raw_text)
+
+    # 2. Конвертируем основной текст Markdown (включая таблицы) в HTML.
     html_content = markdown.markdown(raw_text, extensions=['tables'])
     
     # Флаг для динамического увеличения высоты холста в Chromium
     has_image = "img" in html_content or "table" in html_content or len(options) > 0
 
-    # 2. Прогоняем через BeautifulSoup для поиска и локализации ВСЕХ картинок
+    # 3. Прогоняем основной контент через BeautifulSoup для поиска и локализации картинок
     soup = BeautifulSoup(html_content, "html.parser")
     
     async with httpx.AsyncClient() as client:
@@ -91,7 +94,6 @@ async def convert_to_katex_html(raw_text: str, options: list[str]) -> tuple[str,
             src = img.get("src", "")
             if src.startswith("http"):
                 try:
-                    # Скачиваем изображение и кодируем в Base64 прямо по месту вызова
                     resp = await client.get(src, timeout=12.0)
                     if resp.status_code == 200:
                         encoded = base64.b64encode(resp.content).decode('utf-8')
@@ -102,21 +104,25 @@ async def convert_to_katex_html(raw_text: str, options: list[str]) -> tuple[str,
                     print(f"Ошибка скачивания встроенного изображения {src}: {e}")
 
     text_content = soup.decode_contents()
-
-    # Извлекаем номер задачи (например, "А1", "В10") для красивого бейджа
-    text_content, badge_html = extract_and_format_badge(text_content)
     
-    # 3. Генерируем HTML-сетку вариантов ответов
+    # 4. Генерируем HTML-сетку вариантов ответов
+    # Прогоняем КАЖДЫЙ вариант через markdown, чтобы инлайновые формулы ($...$) корректно распознались!
     options_html = ""
     if options:
         options_html = '<div class="options-grid">'
         markers = ["А", "Б", "В", "Г", "Д", "Е", "Ж", "З", "И", "К"]
         for idx, opt in enumerate(options):
             marker = markers[idx] if idx < len(markers) else f"{idx + 1}"
+            
+            # Рендерим маркдаун для самого текста варианта
+            opt_html = markdown.markdown(opt)
+            # Очищаем от лишних внешних параграфов, которые markdown() добавляет по дефолту
+            opt_html = re.sub(r'^<p>|</p>$', '', opt_html).strip()
+            
             options_html += f"""
             <div class="option-item">
                 <span class="option-marker">{marker}</span>
-                <span class="option-text">{opt}</span>
+                <span class="option-text">{opt_html}</span>
             </div>
             """
         options_html += '</div>'
@@ -144,17 +150,14 @@ async def convert_to_katex_html(raw_text: str, options: list[str]) -> tuple[str,
             
             /* --- АДАПТИВНЫЕ КАРТИНКИ (В ТЕКСТЕ И ТАБЛИЦАХ) --- */
             .task-rendered-img {{ display: block; max-width: 100%; max-height: 420px; width: auto; height: auto; border-radius: 8px; margin: 12px auto; object-fit: contain; }}
-            
-            /* Если картинка оказалась внутри ячейки таблицы, жестко ограничиваем её размеры, чтобы не разносить верстку */
             td .task-rendered-img {{ max-height: 140px; margin: 4px auto; border-radius: 4px; }}
-            
-            /* Опционально: убираем маргины у параграфов внутри таблиц, если маркдаун их создаст */
             td p {{ margin: 0; }}
 
             /* --- СЕТКА ВАРИАНТОВ ОТВЕТОВ --- */
             .options-grid {{ display: flex; flex-direction: column; gap: 12px; margin-top: 8px; border-top: 1px dashed #e2e8f0; padding-top: 20px; }}
             .option-item {{ display: flex; align-items: center; gap: 14px; padding: 12px 16px; background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; font-size: 20px; color: #334155; }}
             .option-marker {{ display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; background-color: #e2e8f0; color: #1e293b; font-weight: 700; border-radius: 50%; font-size: 16px; flex-shrink: 0; }}
+            .option-text p {{ margin: 0; }}
             .katex {{ font-size: 1.05em; color: #0f172a; }}
         </style>
     </head>
