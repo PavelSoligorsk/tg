@@ -76,20 +76,45 @@ def extract_and_format_badge(text: str) -> tuple[str, str]:
     return text, ""
 
 async def convert_to_katex_html(raw_text: str, options: list[str]) -> tuple[str, bool]:
-    # 1. Сначала извлекаем номер задачи (А1, В10) до парсинга маркдауна
+    # 1. Извлекаем номер задачи
     raw_text, badge_html = extract_and_format_badge(raw_text)
 
-    # ЖЕСТКИЙ ФИКС: Если перед таблицей нет пустой строки, Markdown её не распарсит.
-    # Этот регекс принудительно вставляет \n\n перед первой '|', если там идет текст вплотную.
-    raw_text = re.sub(r'([^\n])\s*\n\s*\|', r'\1\n\n|', raw_text)
+    # 2. ЖЕСТКИЙ ФИКС: Заменяем текстовые \n на реальные переносы строк
+    # (Обязательно, если шлешь JSON через API)
+    raw_text = raw_text.replace('\\n', '\n')
 
-    # 2. Конвертируем основной текст Markdown (включая таблицы) в HTML.
+    # 3. Умная отбивка таблиц пустыми строками со всех сторон
+    lines = raw_text.split('\n')
+    processed_lines = []
+    
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        
+        # Если ТЕКУЩАЯ строка начинается с |, а предыдущая была обычным текстом -> отбиваем сверху
+        if stripped.startswith('|'):
+            if i > 0 and processed_lines[-1].strip() != '' and not processed_lines[-1].strip().startswith('|'):
+                processed_lines.append('')
+                
+        # Если ТЕКУЩАЯ строка - обычный текст, а ПРЕДЫДУЩАЯ была таблицей -> отбиваем снизу
+        elif i > 0 and lines[i-1].strip().startswith('|') and stripped != '':
+            processed_lines.append('')
+            
+        processed_lines.append(line)
+
+    raw_text = '\n'.join(processed_lines)
+
+    # 4. Конвертируем в HTML
     html_content = markdown.markdown(raw_text, extensions=['tables'])
     
-    # Флаг для динамического увеличения высоты холста в Chromium
-    has_image = "img" in html_content or "table" in html_content or len(options) > 0
+    # --- ДЕБАГ ДЛЯ КОНСОЛИ ---
+    print("\n====== СГЕНЕРИРОВАННЫЙ HTML ======")
+    print(html_content)
+    print("==================================\n")
 
-    # 3. Прогоняем контент через BeautifulSoup для локализации картинок
+    # Флаг для динамического увеличения высоты холста
+    has_image = "img" in html_content or "<table" in html_content or len(options) > 0
+
+    # 5. Прогоняем через BeautifulSoup
     soup = BeautifulSoup(html_content, "html.parser")
     
     async with httpx.AsyncClient() as client:
@@ -104,19 +129,17 @@ async def convert_to_katex_html(raw_text: str, options: list[str]) -> tuple[str,
                         img["src"] = f"data:{mime};base64,{encoded}"
                         img["class"] = "task-rendered-img"
                 except Exception as e:
-                    print(f"Ошибка скачивания встроенного изображения {src}: {e}")
+                    print(f"Ошибка скачивания картинки {src}: {e}")
 
     text_content = soup.decode_contents()
     
-    # 4. Генерируем HTML-сетку вариантов ответов
+    # 6. Генерируем HTML-сетку вариантов ответов
     options_html = ""
     if options:
         options_html = '<div class="options-grid">'
         markers = ["А", "Б", "В", "Г", "Д", "Е", "Ж", "З", "И", "К"]
         for idx, opt in enumerate(options):
             marker = markers[idx] if idx < len(markers) else f"{idx + 1}"
-            
-            # Рендерим маркдаун для текста варианта
             opt_html = markdown.markdown(opt)
             opt_html = re.sub(r'^<p>|</p>$', '', opt_html).strip()
             
@@ -144,47 +167,17 @@ async def convert_to_katex_html(raw_text: str, options: list[str]) -> tuple[str,
             .task-badge {{ align-self: flex-start; background: linear-gradient(135deg, #2563eb, #1d4ed8); color: #ffffff; font-weight: 700; font-size: 16px; padding: 6px 14px; border-radius: 8px; text-transform: uppercase; }}
             .text-container {{ font-size: 22px; line-height: 1.65; color: #1e293b; font-weight: 400; }}
             
-            /* --- СТИЛИ ДЛЯ ТАБЛИЦ --- */
-            table {{ 
-                width: 100%; 
-                border-collapse: separate; 
-                border-spacing: 0; 
-                margin: 24px 0; 
-                font-size: 19px; 
-                background-color: #f8fafc; 
-                border-radius: 12px; 
-                overflow: hidden; 
-                border: 1px solid #e2e8f0; 
-            }}
-            th, td {{ 
-                padding: 14px 16px; 
-                vertical-align: middle; 
-                text-align: center;
-                border-bottom: 1px solid #e2e8f0;
-                border-right: 1px solid #e2e8f0; /* ИСПРАВЛЕНО: было сломанное border-r */
-            }}
-            th:last-child, td:last-child {{
-                border-right: none;
-            }}
-            tr:last-child td {{
-                border-bottom: none;
-            }}
-            th {{ 
-                background-color: #f1f5f9; 
-                color: #1e293b; 
-                font-weight: 700; 
-            }}
-            td {{
-                background-color: #ffffff;
-                color: #334155;
-            }}
+            table {{ width: 100%; border-collapse: separate; border-spacing: 0; margin: 24px 0; font-size: 19px; background-color: #f8fafc; border-radius: 12px; overflow: hidden; border: 1px solid #e2e8f0; }}
+            th, td {{ padding: 14px 16px; vertical-align: middle; text-align: center; border-bottom: 1px solid #e2e8f0; border-right: 1px solid #e2e8f0; }}
+            th:last-child, td:last-child {{ border-right: none; }}
+            tr:last-child td {{ border-bottom: none; }}
+            th {{ background-color: #f1f5f9; color: #1e293b; font-weight: 700; }}
+            td {{ background-color: #ffffff; color: #334155; }}
             
-            /* --- АДАПТИВНЫЕ КАРТИНКИ --- */
             .task-rendered-img {{ display: block; max-width: 100%; max-height: 420px; width: auto; height: auto; border-radius: 8px; margin: 12px auto; object-fit: contain; }}
             td .task-rendered-img {{ max-height: 140px; margin: 4px auto; border-radius: 4px; }}
             td p {{ margin: 0; }}
 
-            /* --- СЕТКА ВАРИАНТОВ ОТВЕТОВ --- */
             .options-grid {{ display: flex; flex-direction: column; gap: 12px; margin-top: 8px; border-top: 1px dashed #e2e8f0; padding-top: 20px; }}
             .option-item {{ display: flex; align-items: center; gap: 14px; padding: 12px 16px; background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; font-size: 20px; color: #334155; }}
             .option-marker {{ display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; background-color: #e2e8f0; color: #1e293b; font-weight: 700; border-radius: 50%; font-size: 16px; flex-shrink: 0; }}
@@ -210,8 +203,7 @@ async def convert_to_katex_html(raw_text: str, options: list[str]) -> tuple[str,
     </body>
     </html>
     """
-    return html_template, has_image
-
+    return html_template, has_imageвв
 def autocrop_image(img_path: str) -> bytes:
     img = Image.open(img_path).convert("RGB")
     bg = Image.new(img.mode, img.size, (238, 242, 243))
