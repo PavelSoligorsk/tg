@@ -9,3 +9,4 @@ pillow
 python-dotenv
 boto3
 botocore
+uuid

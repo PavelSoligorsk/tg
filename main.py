@@ -3,7 +3,7 @@ import io
 import re
 import time
 import base64
-import tempfile
+import uuid
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
@@ -21,14 +21,13 @@ if not BOT_TOKEN:
 app = FastAPI(title="KaTeX Premium Render Bot API")
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
-# Глобальные переменные для локального кэша KaTeX (чтобы рендерить без сети)
+# Глобальные переменные для локального кэша KaTeX
 KATEX_CSS = ""
 KATEX_JS = ""
 KATEX_AUTO_RENDER_JS = ""
 
 @app.on_event("startup")
 async def load_katex_assets():
-    """Скачивает ресурсы KaTeX один раз при старте, чтобы рендерить инлайново без CDN"""
     global KATEX_CSS, KATEX_JS, KATEX_AUTO_RENDER_JS
     try:
         async with httpx.AsyncClient() as client:
@@ -43,15 +42,15 @@ async def load_katex_assets():
                 print("УСПЕХ: Ресурсы KaTeX успешно кэшированы локально.")
                 return
     except Exception as e:
-        print(f"ВНИМАНИЕ: Не удалось кэшировать KaTeX локально ({e}). Будет использован стандартный CDN.")
+        print(f"ВНИМАНИЕ: Не удалось кэшировать KaTeX локально: {e}")
 
 def get_chromium_path():
     if os.getenv("CHROMIUM_PATH"):
         return os.getenv("CHROMIUM_PATH")
     paths = [
-        "/usr/bin/chromium",            # Linux (Railway Docker)
-        "/usr/bin/chromium-browser",    
-        "/usr/bin/google-chrome",       
+        "/usr/bin/chromium",
+        "/usr/bin/chromium-browser",
+        "/usr/bin/google-chrome",
         "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
         "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe"
     ]
@@ -62,16 +61,17 @@ def get_chromium_path():
 
 browser_path = get_chromium_path()
 hti_args = {
+    'output_path': '/tmp',  # ЖЕСТКО УКАЗЫВАЕМ ПАПКУ ДЛЯ РАБОТЫ
     'custom_flags': [
-        '--headless',              # Стандартный headless режим
+        '--headless',
         '--no-sandbox',
         '--disable-gpu',
         '--hide-scrollbars',
-        '--disable-dev-shm-usage', # Спасает от нехватки памяти RAM в Docker
-        '--disable-dbus',          # Игнорирует отсутствие системной шины d-bus
+        '--disable-dev-shm-usage',
+        '--disable-dbus',
         '--no-zygote',
         '--single-process',
-        '--window-size=1280,1024', # Явно задаем размер окна под наш Xvfb
+        '--window-size=1280,1024',
         '--default-background-color=eef2f3'
     ]
 }
@@ -135,7 +135,6 @@ async def convert_to_katex_html(raw_text: str) -> tuple[str, bool]:
     text_content, badge_html = extract_and_format_badge(text_content)
     img_html = f'<img src="{embedded_img}" class="task-image">' if embedded_img else ''
 
-    # Если ресурсы загружены в память — вшиваем их напрямую (inline), иначе берем CDN
     css_include = f"<style>{KATEX_CSS}</style>" if KATEX_CSS else '<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">'
     js_include = f"<script>{KATEX_JS}</script>" if KATEX_JS else '<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>'
     auto_render_include = f"<script>{KATEX_AUTO_RENDER_JS}</script>" if KATEX_AUTO_RENDER_JS else '<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>'
@@ -149,59 +148,12 @@ async def convert_to_katex_html(raw_text: str) -> tuple[str, bool]:
         {js_include}
         {auto_render_include}
         <style>
-            body {{
-                margin: 0;
-                padding: 40px;
-                display: inline-block;
-                background-color: #eef2f3;
-            }}
-            .card {{
-                font-family: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
-                background-color: #ffffff;
-                padding: 32px;
-                border-radius: 16px;
-                box-shadow: 0 10px 25px rgba(0, 0, 0, 0.08), 0 4px 10px rgba(0, 0, 0, 0.04);
-                width: 620px;
-                display: flex;
-                flex-direction: column;
-                gap: 20px;
-                border: 1px solid rgba(0, 0, 0, 0.03);
-            }}
-            .task-badge {{
-                align-self: flex-start;
-                background: linear-gradient(135deg, #2563eb, #1d4ed8);
-                color: #ffffff;
-                font-weight: 700;
-                font-size: 16px;
-                padding: 6px 14px;
-                border-radius: 8px;
-                letter-spacing: 0.5px;
-                text-transform: uppercase;
-                box-shadow: 0 4px 12px rgba(37, 99, 235, 0.2);
-            }}
-            .text-container {{
-                font-size: 22px;
-                line-height: 1.65;
-                color: #1e293b;
-                font-weight: 400;
-            }}
-            .task-image {{
-                display: block;
-                max-width: 100%;
-                max-height: 450px;
-                width: auto;
-                height: auto;
-                border-radius: 10px;
-                margin: 10px auto 0 auto;
-                object-fit: contain;
-                background-color: #fafafa;
-                border: 1px dashed #e2e8f0;
-                padding: 8px;
-            }}
-            .katex {{
-                font-size: 1.05em;
-                color: #0f172a;
-            }}
+            body {{ margin: 0; padding: 40px; display: inline-block; background-color: #eef2f3; }}
+            .card {{ font-family: 'Inter', system-ui, sans-serif; background-color: #ffffff; padding: 32px; border-radius: 16px; box-shadow: 0 10px 25px rgba(0,0,0,0.08); width: 620px; display: flex; flex-direction: column; gap: 20px; border: 1px solid rgba(0,0,0,0.03); }}
+            .task-badge {{ align-self: flex-start; background: linear-gradient(135deg, #2563eb, #1d4ed8); color: #ffffff; font-weight: 700; font-size: 16px; padding: 6px 14px; border-radius: 8px; text-transform: uppercase; }}
+            .text-container {{ font-size: 22px; line-height: 1.65; color: #1e293b; font-weight: 400; }}
+            .task-image {{ display: block; max-width: 100%; max-height: 450px; width: auto; height: auto; border-radius: 10px; margin: 10px auto 0 auto; object-fit: contain; padding: 8px; }}
+            .katex {{ font-size: 1.05em; color: #0f172a; }}
         </style>
     </head>
     <body>
@@ -211,7 +163,6 @@ async def convert_to_katex_html(raw_text: str) -> tuple[str, bool]:
             {img_html}
         </div>
         <script>
-            // Моментальный синхронный рендеринг математики
             renderMathInElement(document.getElementById("math-content"), {{
                 delimiters: [
                     {{left: "$$", right: "$$", display: true}},
@@ -248,43 +199,36 @@ def autocrop_image(img_path: str) -> bytes:
 
 @app.post("/send_math")
 async def send_math(msg: MathMessage):
-    # Работаем строго во временной директории /tmp/
-    with tempfile.NamedTemporaryFile(suffix=".html", mode="w", encoding="utf-8", delete=False) as tf_html, \
-         tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tf_img:
-        
-        html_file = tf_html.name
-        img_file = tf_img.name
+    # 1. Генерируем уникальное имя файла без создания самого файла!
+    unique_id = uuid.uuid4().hex
+    img_filename = f"task_{unique_id}.png"
+    img_filepath = f"/tmp/{img_filename}"
 
     try:
         html_code, has_image = await convert_to_katex_html(msg.latex)
         
-        with open(html_file, "w", encoding="utf-8") as f:
-            f.write(html_code)
-        
         canvas_width = 820
         canvas_height = 2200 if has_image else 1000
         
-        # Рендерим через явное указание локального пути для стабильности в Linux
+        # 2. Передаем HTML напрямую строкой (html_str). Библиотека сама всё создаст и удалит.
         try:
-            hti.screenshot(html_file=html_file, save_as=img_file, size=(canvas_width, canvas_height))
+            hti.screenshot(html_str=html_code, save_as=img_filename, size=(canvas_width, canvas_height))
         except Exception as e:
-            if not os.path.exists(img_file):
-                print(f"DEBUG: Провал вызова screenshot: {e}")
-                raise
+            print(f"DEBUG: Ворчание Chromium: {e}")
 
-        # Короткое ожидание финализации записи на диск Linux-контейнера
+        # 3. Даем время на сохранение
         time.sleep(0.3)
         
-        # Если файл по какой-то причине отсутствует или пуст — даем ему вторую попытку с задержкой
-        if not os.path.exists(img_file) or os.path.getsize(img_file) == 0:
-            time.sleep(0.7)
-            if not os.path.exists(img_file) or os.path.getsize(img_file) == 0:
-                raise FileNotFoundError("Браузер не смог сгенерировать непустой скриншот (0 байт).")
+        # 4. Проверяем файл по полному пути
+        if not os.path.exists(img_filepath) or os.path.getsize(img_filepath) == 0:
+            time.sleep(1.0)
+            if not os.path.exists(img_filepath) or os.path.getsize(img_filepath) == 0:
+                raise FileNotFoundError(f"Скриншот не был сохранен: {img_filepath}")
             
-        # Обрезка полей изображения
-        img_bytes = autocrop_image(img_file)
+        # Обрезка полей
+        img_bytes = autocrop_image(img_filepath)
         
-        # Отправка в Telegram API
+        # Отправка в Telegram
         async with httpx.AsyncClient() as client:
             files = {"photo": ("task.png", img_bytes, "image/png")}
             data = {"chat_id": msg.chat_id, "caption": msg.caption}
@@ -299,9 +243,12 @@ async def send_math(msg: MathMessage):
 
     except Exception as e:
         print(f"CRITICAL Блок Исключения: {repr(e)}")
-        raise HTTPException(status_code=500, detail=f"Ошибка адаптивного рендеринга: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Ошибка рендеринга: {str(e)}")
         
     finally:
-        # Гарантированное удаление временных файлов с диска
-        if os.path.exists(html_file): os.remove(html_file)
-        if os.path.exists(img_file): os.remove(img_file)
+        # Гарантированно удаляем сгенерированную картинку
+        if os.path.exists(img_filepath):
+            try:
+                os.remove(img_filepath)
+            except Exception as e:
+                print(f"Не удалось удалить кэш картинки: {e}")
