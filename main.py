@@ -32,7 +32,11 @@ async def load_katex_assets():
             res_auto = await client.get("https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js")
             
             if all(r.status_code == 200 for r in [res_css, res_js, res_auto]):
-                GLOBAL_ASSETS["css"] = res_css.text
+                # --- ИСПРАВЛЕНИЕ ЗДЕСЬ ---
+                # Меняем локальные пути шрифтов на абсолютные с серверов CDN
+                fixed_css = res_css.text.replace('url(fonts/', 'url(https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/fonts/')
+                
+                GLOBAL_ASSETS["css"] = fixed_css
                 GLOBAL_ASSETS["js"] = res_js.text
                 GLOBAL_ASSETS["auto_js"] = res_auto.text
                 print("УСПЕХ: Локальный кэш KaTeX успешно инициализирован.")
@@ -57,7 +61,8 @@ CHROMIUM_FLAGS = [
     "--headless", "--no-sandbox", "--disable-setuid-sandbox",
     "--disable-gpu", "--disable-dev-shm-usage", "--disable-software-rasterizer",
     "--hide-scrollbars", "--disable-dbus", "--no-zygote", "--default-background-color=eef2f3",
-    "--force-device-scale-factor=2"
+    "--force-device-scale-factor=2",
+    "--virtual-time-budget=1000"  # <--- Добавили вот это
 ]
 
 class MathMessage(BaseModel):
