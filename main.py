@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import httpx
+import markdown  # Добавляем для парсинга маркдаун-таблиц
 from bs4 import BeautifulSoup
 from PIL import Image, ImageChops
 
@@ -58,33 +59,14 @@ CHROMIUM_FLAGS = [
     "--hide-scrollbars", "--disable-dbus", "--no-zygote", "--default-background-color=eef2f3"
 ]
 
-# Обновленная Pydantic-модель под множественные ответы
 class MathMessage(BaseModel):
     chat_id: int | str
     caption: str = ""
     latex: str
     is_quiz: bool = False
     options: list[str] = []
-    # Теперь принимаем список ID правильных ответов (например, [0, 2])
     correct_option_ids: list[int] = [] 
-
-async def process_embedded_images(raw_text: str) -> tuple[str, str | None]:
-    match = re.search(r'!\[.*?\]\((https?://[^\s)]+)\)', raw_text)
-    img_base64 = None
-    if match:
-        img_url = match.group(1)
-        raw_text = re.sub(r'\[?!\[.*?\]\(https?://[^\s)]+\)\]?\(.*?\)', '', raw_text)
-        raw_text = re.sub(r'!\[.*?\]\((https?://[^\s)]+)\)', '', raw_text)
-        try:
-            async with httpx.AsyncClient() as client:
-                resp = await client.get(img_url, timeout=10.0)
-                if resp.status_code == 200:
-                    encoded = base64.b64encode(resp.content).decode('utf-8')
-                    mime = "image/png" if "png" in img_url.lower() else "image/jpeg"
-                    img_base64 = f"data:{mime};base64,{encoded}"
-        except Exception as e:
-            print(f"Ошибка парсинга изображения: {e}")
-    return raw_text, img_base64
+    difficulty: int
 
 def extract_and_format_badge(text: str) -> tuple[str, str]:
     match = re.search(r'^(?:<strong>)?([А-Яа-яA-Za-z][-–]?\d+)\.?(?:</strong>)?\s*', text)
@@ -94,29 +76,40 @@ def extract_and_format_badge(text: str) -> tuple[str, str]:
     return text, ""
 
 async def convert_to_katex_html(raw_text: str, options: list[str]) -> tuple[str, bool]:
-    raw_text, embedded_img = await process_embedded_images(raw_text)
-    has_image = embedded_img is not None or len(options) > 0
+    # 1. Конвертируем Markdown (включая таблицы) в HTML. 
+    # Расширение 'tables' отвечает за обработку структуры из символов '|'
+    html_content = markdown.markdown(raw_text, extensions=['tables'])
+    
+    # Флаг для динамического увеличения высоты холста в Chromium
+    has_image = "img" in html_content or "table" in html_content or len(options) > 0
 
-    if "<img" in raw_text:
-        soup = BeautifulSoup(raw_text, "html.parser")
+    # 2. Прогоняем через BeautifulSoup для поиска и локализации ВСЕХ картинок
+    soup = BeautifulSoup(html_content, "html.parser")
+    
+    async with httpx.AsyncClient() as client:
         for img in soup.find_all("img"):
-            alt = img.get("alt", "")
-            if alt: img.replace_with(f"${alt}$")
-        text_content = soup.decode_contents()
-    else:
-        text_content = raw_text
+            src = img.get("src", "")
+            if src.startswith("http"):
+                try:
+                    # Скачиваем изображение и кодируем в Base64 прямо по месту вызова
+                    resp = await client.get(src, timeout=12.0)
+                    if resp.status_code == 200:
+                        encoded = base64.b64encode(resp.content).decode('utf-8')
+                        mime = "image/png" if "png" in src.lower() else "image/jpeg"
+                        img["src"] = f"data:{mime};base64,{encoded}"
+                        img["class"] = "task-rendered-img"
+                except Exception as e:
+                    print(f"Ошибка скачивания встроенного изображения {src}: {e}")
 
-    text_content = re.sub(r'</?(p|span|div)[^>]*>', ' ', text_content)
-    text_content = re.sub(r'\s+', ' ', text_content).strip()
+    text_content = soup.decode_contents()
+
+    # Извлекаем номер задачи (например, "А1", "В10") для красивого бейджа
     text_content, badge_html = extract_and_format_badge(text_content)
     
-    img_html = f'<img src="{embedded_img}" class="task-image">' if embedded_img else ''
-
-    # Генерируем красивую HTML-сетку для вариантов ответов прямо внутри карточки
+    # 3. Генерируем HTML-сетку вариантов ответов
     options_html = ""
     if options:
         options_html = '<div class="options-grid">'
-        # Буквенные маркеры для СТ (А, Б, В, Г, Д...)
         markers = ["А", "Б", "В", "Г", "Д", "Е", "Ж", "З", "И", "К"]
         for idx, opt in enumerate(options):
             marker = markers[idx] if idx < len(markers) else f"{idx + 1}"
@@ -140,13 +133,28 @@ async def convert_to_katex_html(raw_text: str, options: list[str]) -> tuple[str,
         {css_include} {js_include} {auto_render_include}
         <style>
             body {{ margin: 0; padding: 40px; display: inline-block; background-color: #eef2f3; }}
-            .card {{ font-family: 'Inter', system-ui, sans-serif; background-color: #ffffff; padding: 32px; border-radius: 16px; box-shadow: 0 10px 25px rgba(0,0,0,0.08); width: 640px; display: flex; flex-direction: column; gap: 24px; border: 1px solid rgba(0,0,0,0.03); }}
+            .card {{ font-family: 'Inter', system-ui, sans-serif; background-color: #ffffff; padding: 32px; border-radius: 16px; box-shadow: 0 10px 25px rgba(0,0,0,0.08); width: 660px; display: flex; flex-direction: column; gap: 24px; border: 1px solid rgba(0,0,0,0.03); }}
             .task-badge {{ align-self: flex-start; background: linear-gradient(135deg, #2563eb, #1d4ed8); color: #ffffff; font-weight: 700; font-size: 16px; padding: 6px 14px; border-radius: 8px; text-transform: uppercase; }}
             .text-container {{ font-size: 22px; line-height: 1.65; color: #1e293b; font-weight: 400; }}
-            .task-image {{ display: block; max-width: 100%; max-height: 400px; width: auto; height: auto; border-radius: 10px; margin: 10px auto 0 auto; object-fit: contain; }}
+            
+            /* --- СТИЛИ ДЛЯ ТАБЛИЦ --- */
+            table {{ width: 100%; border-collapse: collapse; margin: 18px 0; font-size: 20px; background-color: #f8fafc; border-radius: 10px; overflow: hidden; border: 1px solid #e2e8f0; }}
+            th, td {{ padding: 14px 18px; border: 1px solid #e2e8f0; vertical-align: middle; text-align: center; }}
+            th {{ background-color: #f1f5f9; color: #1e293b; font-weight: 600; }}
+            
+            /* --- АДАПТИВНЫЕ КАРТИНКИ (В ТЕКСТЕ И ТАБЛИЦАХ) --- */
+            .task-rendered-img {{ display: block; max-width: 100%; max-height: 420px; width: auto; height: auto; border-radius: 8px; margin: 12px auto; object-fit: contain; }}
+            
+            /* Если картинка оказалась внутри ячейки таблицы, жестко ограничиваем её размеры, чтобы не разносить верстку */
+            td .task-rendered-img {{ max-height: 140px; margin: 4px auto; border-radius: 4px; }}
+            
+            /* Опционально: убираем маргины у параграфов внутри таблиц, если маркдаун их создаст */
+            td p {{ margin: 0; }}
+
+            /* --- СЕТКА ВАРИАНТОВ ОТВЕТОВ --- */
             .options-grid {{ display: flex; flex-direction: column; gap: 12px; margin-top: 8px; border-top: 1px dashed #e2e8f0; padding-top: 20px; }}
             .option-item {{ display: flex; align-items: center; gap: 14px; padding: 12px 16px; background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; font-size: 20px; color: #334155; }}
-            .option-marker {{ display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; background-color: #e2e8f0; color: #1e293b; font-weight: 700; border-radius: 50%; font-size: 16px; }}
+            .option-marker {{ display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; background-color: #e2e8f0; color: #1e293b; font-weight: 700; border-radius: 50%; font-size: 16px; flex-shrink: 0; }}
             .katex {{ font-size: 1.05em; color: #0f172a; }}
         </style>
     </head>
@@ -154,7 +162,6 @@ async def convert_to_katex_html(raw_text: str, options: list[str]) -> tuple[str,
         <div class="card" id="math-root">
             {badge_html}
             <div class="text-container" id="math-content">{text_content}</div>
-            {img_html}
             {options_html}
         </div>
         <script>
@@ -189,14 +196,14 @@ async def send_math(msg: MathMessage):
     img_file = f"/tmp/task_{unique_id}.png"
 
     try:
-        # Передаем варианты ответов в рендер HTML шаблона
         html_code, has_image = await convert_to_katex_html(msg.latex, msg.options)
         
         with open(html_file, "w", encoding="utf-8") as f:
             f.write(html_code)
             
-        canvas_width = 820
-        canvas_height = 2500 if has_image else 1200
+        canvas_width = 840
+        # Запас по высоте увеличен до 3200 на случай длинных таблиц с картинками
+        canvas_height = 3200 if has_image else 1200
         browser_exec = get_chromium_path()
         if not browser_exec: raise RuntimeError("Chromium не найден!")
 
@@ -208,30 +215,21 @@ async def send_math(msg: MathMessage):
             
         img_bytes = autocrop_image(img_file)
         
-        # --- ОТПРАВКА В TELEGRAM ---
         async with httpx.AsyncClient() as client:
-            # Отправляем карточку
             files = {"photo": ("task.png", img_bytes, "image/png")}
             photo_resp = await client.post(f"{TELEGRAM_API}/sendPhoto", data={"chat_id": msg.chat_id, "caption": msg.caption}, files=files, timeout=30.0)
             if photo_resp.status_code != 200: raise HTTPException(status_code=400, detail=photo_resp.text)
             photo_res_data = photo_resp.json()
 
-            # Обработка опроса/викторины с валидацией длины массива
             if msg.is_quiz and msg.options:
-                # 1. Валидация количества вариантов: Telegram строго принимает от 2 до 10
                 if 2 <= len(msg.options) <= 10:
-                    # Обрезаем строки вариантов до 100 символов (лимит Telegram API на один option)
                     clean_options = [opt[:100] for opt in msg.options] 
-                    
-                    # ПРОВЕРКА: Сколько правильных ответов пришло?
                     is_multiple = len(msg.correct_option_ids) > 1
                     
-                    # Генерируем маркеры для кнопок опроса (А, Б, В...) на основе реального количества вариантов
                     markers = ["А", "Б", "В", "Г", "Д", "Е", "Ж", "З", "И", "К"]
                     poll_options = [f"Вариант {markers[i]}" for i in range(len(clean_options))]
                     
                     if is_multiple:
-                        # Если правильных ответов несколько — переключаемся на 'regular' с множественным выбором
                         quiz_data = {
                             "chat_id": msg.chat_id,
                             "question": "Выберите правильные ответы (их несколько) 👇",
@@ -241,10 +239,7 @@ async def send_math(msg: MathMessage):
                             "is_anonymous": True
                         }
                     else:
-                        # Если ответ один — оставляем классический интерактивный Quiz
                         single_id = msg.correct_option_ids[0] if msg.correct_option_ids else 0
-                        
-                        # Защита: индекс правильного ответа не должен выходить за границы массива вариантов
                         if single_id >= len(clean_options):
                             single_id = 0
                             
@@ -263,7 +258,6 @@ async def send_math(msg: MathMessage):
                     else:
                         print(f"DEBUG Ошибка sendPoll API: {quiz_resp.text}")
                 else:
-                    # Логируем проблему в консоль рендер-бота, но не крашим бэкенд
                     print(f"ВНИМАНИЕ: Опрос пропущен. Количество вариантов ({len(msg.options)}) вне лимитов Telegram (2-10).")
 
             return {"status": "success", "telegram_response": photo_res_data}
