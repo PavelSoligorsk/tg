@@ -79,6 +79,10 @@ async def convert_to_katex_html(raw_text: str, options: list[str]) -> tuple[str,
     # 1. Сначала извлекаем номер задачи (А1, В10) до парсинга маркдауна
     raw_text, badge_html = extract_and_format_badge(raw_text)
 
+    # ЖЕСТКИЙ ФИКС: Если перед таблицей нет пустой строки, Markdown её не распарсит.
+    # Этот регекс принудительно вставляет \n\n перед первой '|', если там идет текст вплотную.
+    raw_text = re.sub(r'([^\n])\s*\n\s*\|', r'\1\n\n|', raw_text)
+
     # 2. Конвертируем основной текст Markdown (включая таблицы) в HTML.
     html_content = markdown.markdown(raw_text, extensions=['tables'])
     
@@ -112,7 +116,7 @@ async def convert_to_katex_html(raw_text: str, options: list[str]) -> tuple[str,
         for idx, opt in enumerate(options):
             marker = markers[idx] if idx < len(markers) else f"{idx + 1}"
             
-            # Рендерим маркдаун для текста варианта (чтобы $...$ работали)
+            # Рендерим маркдаун для текста варианта
             opt_html = markdown.markdown(opt)
             opt_html = re.sub(r'^<p>|</p>$', '', opt_html).strip()
             
@@ -140,7 +144,7 @@ async def convert_to_katex_html(raw_text: str, options: list[str]) -> tuple[str,
             .task-badge {{ align-self: flex-start; background: linear-gradient(135deg, #2563eb, #1d4ed8); color: #ffffff; font-weight: 700; font-size: 16px; padding: 6px 14px; border-radius: 8px; text-transform: uppercase; }}
             .text-container {{ font-size: 22px; line-height: 1.65; color: #1e293b; font-weight: 400; }}
             
-            /* --- ОБНОВЛЕННЫЕ ПРЕМИУМ СТИЛИ ДЛЯ ТАБЛИЦ --- */
+            /* --- СТИЛИ ДЛЯ ТАБЛИЦ --- */
             table {{ 
                 width: 100%; 
                 border-collapse: separate; 
@@ -157,13 +161,11 @@ async def convert_to_katex_html(raw_text: str, options: list[str]) -> tuple[str,
                 vertical-align: middle; 
                 text-align: center;
                 border-bottom: 1px solid #e2e8f0;
-                border-r: 1px solid #e2e8f0;
+                border-right: 1px solid #e2e8f0; /* ИСПРАВЛЕНО: было сломанное border-r */
             }}
-            /* Убираем правый бордер у крайней правой колонки */
             th:last-child, td:last-child {{
                 border-right: none;
             }}
-            /* Убираем нижний бордер у последней строки таблицы */
             tr:last-child td {{
                 border-bottom: none;
             }}
@@ -177,7 +179,7 @@ async def convert_to_katex_html(raw_text: str, options: list[str]) -> tuple[str,
                 color: #334155;
             }}
             
-            /* --- АДАПТИВНЫЕ КАРТИНКИ (В ТЕКСТЕ И ТАБЛИЦАХ) --- */
+            /* --- АДАПТИВНЫЕ КАРТИНКИ --- */
             .task-rendered-img {{ display: block; max-width: 100%; max-height: 420px; width: auto; height: auto; border-radius: 8px; margin: 12px auto; object-fit: contain; }}
             td .task-rendered-img {{ max-height: 140px; margin: 4px auto; border-radius: 4px; }}
             td p {{ margin: 0; }}
