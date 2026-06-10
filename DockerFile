@@ -1,9 +1,7 @@
 # Используем официальный образ Python
 FROM python:3.11-slim
 
-# Устанавливаем системные зависимости для Chromium
-# Добавляем gconf, libgdk-pixbuf, libgtk, чтобы браузер запустился в headless-режиме
-# Обновленный список зависимостей для современного Debian
+# Устанавливаем системные зависимости для Chromium и КИРИЛЛИЧЕСКИЕ ШРИФТЫ
 RUN apt-get update && apt-get install -y \
     chromium \
     chromium-driver \
@@ -20,6 +18,9 @@ RUN apt-get update && apt-get install -y \
     libxrandr2 \
     libgbm1 \
     xvfb \
+    fonts-liberation \
+    fontconfig \
+    && fc-cache -fv \
     && rm -rf /var/lib/apt/lists/*
 
 # Рабочая директория
