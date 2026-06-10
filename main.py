@@ -203,7 +203,7 @@ async def convert_to_katex_html(raw_text: str, options: list[str]) -> tuple[str,
     </body>
     </html>
     """
-    return html_template, has_imageвв
+    return html_template, has_image
 def autocrop_image(img_path: str) -> bytes:
     img = Image.open(img_path).convert("RGB")
     bg = Image.new(img.mode, img.size, (238, 242, 243))
