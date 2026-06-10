@@ -76,8 +76,7 @@ def extract_and_format_badge(text: str) -> tuple[str, str]:
     return text, ""
 
 async def convert_to_katex_html(raw_text: str, options: list[str]) -> tuple[str, bool]:
-    # 1. Сначала извлекаем номер задачи (А1, В10) из абсолютно сырого текста,
-    # пока markdown-парсер не добавил туда свои теги параграфов <p>
+    # 1. Сначала извлекаем номер задачи (А1, В10) до парсинга маркдауна
     raw_text, badge_html = extract_and_format_badge(raw_text)
 
     # 2. Конвертируем основной текст Markdown (включая таблицы) в HTML.
@@ -86,7 +85,7 @@ async def convert_to_katex_html(raw_text: str, options: list[str]) -> tuple[str,
     # Флаг для динамического увеличения высоты холста в Chromium
     has_image = "img" in html_content or "table" in html_content or len(options) > 0
 
-    # 3. Прогоняем основной контент через BeautifulSoup для поиска и локализации картинок
+    # 3. Прогоняем контент через BeautifulSoup для локализации картинок
     soup = BeautifulSoup(html_content, "html.parser")
     
     async with httpx.AsyncClient() as client:
@@ -106,7 +105,6 @@ async def convert_to_katex_html(raw_text: str, options: list[str]) -> tuple[str,
     text_content = soup.decode_contents()
     
     # 4. Генерируем HTML-сетку вариантов ответов
-    # Прогоняем КАЖДЫЙ вариант через markdown, чтобы инлайновые формулы ($...$) корректно распознались!
     options_html = ""
     if options:
         options_html = '<div class="options-grid">'
@@ -114,9 +112,8 @@ async def convert_to_katex_html(raw_text: str, options: list[str]) -> tuple[str,
         for idx, opt in enumerate(options):
             marker = markers[idx] if idx < len(markers) else f"{idx + 1}"
             
-            # Рендерим маркдаун для самого текста варианта
+            # Рендерим маркдаун для текста варианта (чтобы $...$ работали)
             opt_html = markdown.markdown(opt)
-            # Очищаем от лишних внешних параграфов, которые markdown() добавляет по дефолту
             opt_html = re.sub(r'^<p>|</p>$', '', opt_html).strip()
             
             options_html += f"""
@@ -143,10 +140,42 @@ async def convert_to_katex_html(raw_text: str, options: list[str]) -> tuple[str,
             .task-badge {{ align-self: flex-start; background: linear-gradient(135deg, #2563eb, #1d4ed8); color: #ffffff; font-weight: 700; font-size: 16px; padding: 6px 14px; border-radius: 8px; text-transform: uppercase; }}
             .text-container {{ font-size: 22px; line-height: 1.65; color: #1e293b; font-weight: 400; }}
             
-            /* --- СТИЛИ ДЛЯ ТАБЛИЦ --- */
-            table {{ width: 100%; border-collapse: collapse; margin: 18px 0; font-size: 20px; background-color: #f8fafc; border-radius: 10px; overflow: hidden; border: 1px solid #e2e8f0; }}
-            th, td {{ padding: 14px 18px; border: 1px solid #e2e8f0; vertical-align: middle; text-align: center; }}
-            th {{ background-color: #f1f5f9; color: #1e293b; font-weight: 600; }}
+            /* --- ОБНОВЛЕННЫЕ ПРЕМИУМ СТИЛИ ДЛЯ ТАБЛИЦ --- */
+            table {{ 
+                width: 100%; 
+                border-collapse: separate; 
+                border-spacing: 0; 
+                margin: 24px 0; 
+                font-size: 19px; 
+                background-color: #f8fafc; 
+                border-radius: 12px; 
+                overflow: hidden; 
+                border: 1px solid #e2e8f0; 
+            }}
+            th, td {{ 
+                padding: 14px 16px; 
+                vertical-align: middle; 
+                text-align: center;
+                border-bottom: 1px solid #e2e8f0;
+                border-r: 1px solid #e2e8f0;
+            }}
+            /* Убираем правый бордер у крайней правой колонки */
+            th:last-child, td:last-child {{
+                border-right: none;
+            }}
+            /* Убираем нижний бордер у последней строки таблицы */
+            tr:last-child td {{
+                border-bottom: none;
+            }}
+            th {{ 
+                background-color: #f1f5f9; 
+                color: #1e293b; 
+                font-weight: 700; 
+            }}
+            td {{
+                background-color: #ffffff;
+                color: #334155;
+            }}
             
             /* --- АДАПТИВНЫЕ КАРТИНКИ (В ТЕКСТЕ И ТАБЛИЦАХ) --- */
             .task-rendered-img {{ display: block; max-width: 100%; max-height: 420px; width: auto; height: auto; border-radius: 8px; margin: 12px auto; object-fit: contain; }}
@@ -205,7 +234,6 @@ async def send_math(msg: MathMessage):
             f.write(html_code)
             
         canvas_width = 840
-        # Запас по высоте увеличен до 3200 на случай длинных таблиц с картинками
         canvas_height = 3200 if has_image else 1200
         browser_exec = get_chromium_path()
         if not browser_exec: raise RuntimeError("Chromium не найден!")
