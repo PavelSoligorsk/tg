@@ -72,11 +72,14 @@ CHROMIUM_FLAGS = [
     "--default-background-color=eef2f3"
 ]
 
+# Стало (ЗАМЕНИ НА ЭТО):
 class MathMessage(BaseModel):
     chat_id: int | str
     caption: str = ""
     latex: str
-
+    is_quiz: bool = False          # Добавили дефолтное значение False
+    options: list[str] = []        # Добавили пустой список для вариантов
+    correct_option_id: int | None = None  # Добавили ID правильного ответа
 async def process_embedded_images(raw_text: str) -> tuple[str, str | None]:
     match = re.search(r'!\[.*?\]\((https?://[^\s)]+)\)', raw_text)
     img_base64 = None
