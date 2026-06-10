@@ -1,15 +1,14 @@
 import os
 import io
 import re
-import time
 import base64
 import uuid
+import subprocess
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import httpx
 from bs4 import BeautifulSoup
-from html2image import Html2Image
 from PIL import Image, ImageChops
 
 load_dotenv()
@@ -59,27 +58,19 @@ def get_chromium_path():
             return path
     return None
 
-browser_path = get_chromium_path()
-hti_args = {
-    'output_path': '/tmp',  # ЖЕСТКО УКАЗЫВАЕМ ПАПКУ ДЛЯ РАБОТЫ
-    'custom_flags': [
-        '--headless',
-        '--no-sandbox',
-        '--disable-gpu',
-        '--hide-scrollbars',
-        '--disable-dev-shm-usage',
-        '--disable-dbus',
-        '--no-zygote',
-        '--single-process',
-        '--window-size=1280,1024',
-        '--default-background-color=eef2f3'
-    ]
-}
-
-if browser_path:
-    hti_args['browser_executable'] = browser_path
-
-hti = Html2Image(**hti_args)
+# Флаги для максимально стабильного запуска Chromium в Docker
+CHROMIUM_FLAGS = [
+    "--headless", 
+    "--no-sandbox",
+    "--disable-setuid-sandbox",
+    "--disable-gpu",
+    "--disable-dev-shm-usage",
+    "--disable-software-rasterizer",
+    "--hide-scrollbars",
+    "--disable-dbus",
+    "--no-zygote",
+    "--default-background-color=eef2f3"
+]
 
 class MathMessage(BaseModel):
     chat_id: int | str
@@ -199,34 +190,49 @@ def autocrop_image(img_path: str) -> bytes:
 
 @app.post("/send_math")
 async def send_math(msg: MathMessage):
-    # 1. Генерируем уникальное имя файла без создания самого файла!
     unique_id = uuid.uuid4().hex
-    img_filename = f"task_{unique_id}.png"
-    img_filepath = f"/tmp/{img_filename}"
+    html_file = f"/tmp/task_{unique_id}.html"
+    img_file = f"/tmp/task_{unique_id}.png"
 
     try:
         html_code, has_image = await convert_to_katex_html(msg.latex)
         
+        # Сохраняем HTML файл
+        with open(html_file, "w", encoding="utf-8") as f:
+            f.write(html_code)
+            
         canvas_width = 820
         canvas_height = 2200 if has_image else 1000
         
-        # 2. Передаем HTML напрямую строкой (html_str). Библиотека сама всё создаст и удалит.
-        try:
-            hti.screenshot(html_str=html_code, save_as=img_filename, size=(canvas_width, canvas_height))
-        except Exception as e:
-            print(f"DEBUG: Ворчание Chromium: {e}")
+        browser_exec = get_chromium_path()
+        if not browser_exec:
+            raise RuntimeError("Исполняемый файл Chromium не найден в системе!")
 
-        # 3. Даем время на сохранение
-        time.sleep(0.3)
+        # Формируем прямую команду для ОС
+        cmd = [
+            browser_exec,
+            *CHROMIUM_FLAGS,
+            f"--window-size={canvas_width},{canvas_height}",
+            f"--screenshot={img_file}",
+            html_file
+        ]
+
+        # Синхронно запускаем браузер и ждем (до 15 секунд). Больше никаких time.sleep!
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
         
-        # 4. Проверяем файл по полному пути
-        if not os.path.exists(img_filepath) or os.path.getsize(img_filepath) == 0:
-            time.sleep(1.0)
-            if not os.path.exists(img_filepath) or os.path.getsize(img_filepath) == 0:
-                raise FileNotFoundError(f"Скриншот не был сохранен: {img_filepath}")
+        # Проверяем, ругался ли браузер
+        if result.returncode != 0:
+            print(f"DEBUG Сбой Chromium STDOUT: {result.stdout}")
+            print(f"DEBUG Сбой Chromium STDERR: {result.stderr}")
+            raise RuntimeError(f"Сбой процесса браузера. Код: {result.returncode}")
+
+        if not os.path.exists(img_file) or os.path.getsize(img_file) == 0:
+            # Если картинки нет, теперь мы можем вытащить реальную причину из логов ядра!
+            error_log = result.stderr if result.stderr else "Пустой лог ошибок"
+            raise FileNotFoundError(f"Файл пуст. Лог Chromium: {error_log}")
             
         # Обрезка полей
-        img_bytes = autocrop_image(img_filepath)
+        img_bytes = autocrop_image(img_file)
         
         # Отправка в Telegram
         async with httpx.AsyncClient() as client:
@@ -241,14 +247,16 @@ async def send_math(msg: MathMessage):
             
         return {"status": "success", "telegram_response": res_data}
 
+    except subprocess.TimeoutExpired:
+        print("CRITICAL: Процесс Chromium завис по таймауту!")
+        raise HTTPException(status_code=500, detail="Браузер завис при генерации картинки.")
+        
     except Exception as e:
         print(f"CRITICAL Блок Исключения: {repr(e)}")
         raise HTTPException(status_code=500, detail=f"Ошибка рендеринга: {str(e)}")
         
     finally:
-        # Гарантированно удаляем сгенерированную картинку
-        if os.path.exists(img_filepath):
-            try:
-                os.remove(img_filepath)
-            except Exception as e:
-                print(f"Не удалось удалить кэш картинки: {e}")
+        if os.path.exists(html_file):
+            os.remove(html_file)
+        if os.path.exists(img_file):
+            os.remove(img_file)
