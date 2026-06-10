@@ -197,7 +197,6 @@ async def send_math(msg: MathMessage):
     try:
         html_code, has_image = await convert_to_katex_html(msg.latex)
         
-        # Сохраняем HTML файл
         with open(html_file, "w", encoding="utf-8") as f:
             f.write(html_code)
             
@@ -208,7 +207,6 @@ async def send_math(msg: MathMessage):
         if not browser_exec:
             raise RuntimeError("Исполняемый файл Chromium не найден в системе!")
 
-        # Формируем прямую команду для ОС
         cmd = [
             browser_exec,
             *CHROMIUM_FLAGS,
@@ -217,40 +215,55 @@ async def send_math(msg: MathMessage):
             html_file
         ]
 
-        # Синхронно запускаем браузер и ждем (до 15 секунд). Больше никаких time.sleep!
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
         
-        # Проверяем, ругался ли браузер
         if result.returncode != 0:
-            print(f"DEBUG Сбой Chromium STDOUT: {result.stdout}")
             print(f"DEBUG Сбой Chromium STDERR: {result.stderr}")
             raise RuntimeError(f"Сбой процесса браузера. Код: {result.returncode}")
 
         if not os.path.exists(img_file) or os.path.getsize(img_file) == 0:
-            # Если картинки нет, теперь мы можем вытащить реальную причину из логов ядра!
             error_log = result.stderr if result.stderr else "Пустой лог ошибок"
             raise FileNotFoundError(f"Файл пуст. Лог Chromium: {error_log}")
             
-        # Обрезка полей
         img_bytes = autocrop_image(img_file)
         
-        # Отправка в Telegram
+        # --- ОТПРАВКА В TELEGRAM ---
         async with httpx.AsyncClient() as client:
+            # Шаг A: Всегда отправляем красивую карточку-картинку с формулами
             files = {"photo": ("task.png", img_bytes, "image/png")}
             data = {"chat_id": msg.chat_id, "caption": msg.caption}
-            resp = await client.post(f"{TELEGRAM_API}/sendPhoto", data=data, files=files, timeout=30.0)
+            photo_resp = await client.post(f"{TELEGRAM_API}/sendPhoto", data=data, files=files, timeout=30.0)
             
-        res_data = resp.json()
-        if resp.status_code != 200:
-            print(f"DEBUG: Ошибка Telegram API: {res_data}")
-            raise HTTPException(status_code=resp.status_code, detail=f"Telegram Error: {res_data}")
+            if photo_resp.status_code != 200:
+                raise HTTPException(status_code=photo_resp.status_code, detail=f"TG Photo Error: {photo_resp.text}")
             
-        return {"status": "success", "telegram_response": res_data}
+            photo_res_data = photo_resp.json()
+
+            # Шаг B: Если это ЗАКРЫТЫЙ ответ (викторина), шлем следом опрос, привязанный к карточке
+            if msg.is_quiz and msg.options:
+                # Ограничение Telegram: в викторинах может быть от 2 до 10 вариантов
+                clean_options = msg.options[:10]
+                if len(clean_options) >= 2:
+                    quiz_data = {
+                        "chat_id": msg.chat_id,
+                        "question": "Выберите правильный ответ ниже 👇", # Краткий призыв, само задание на картинке
+                        "options": [opt for opt in clean_options],
+                        "type": "quiz", # Превращает опрос в викторину с 1 правильным ответом
+                        "correct_option_id": msg.correct_option_id if msg.correct_option_id is not None else 0,
+                        "is_anonymous": True
+                    }
+                    
+                    quiz_resp = await client.post(f"{TELEGRAM_API}/sendPoll", json=quiz_data, timeout=20.0)
+                    if quiz_resp.status_code != 200:
+                        print(f"DEBUG Ворчание на Poll API: {quiz_resp.text}")
+                        # Не падаем критически, если опрос не ушел, главное картинка уже есть
+                    else:
+                        photo_res_data["attached_quiz"] = quiz_resp.json()
+
+            return {"status": "success", "telegram_response": photo_res_data}
 
     except subprocess.TimeoutExpired:
-        print("CRITICAL: Процесс Chromium завис по таймауту!")
         raise HTTPException(status_code=500, detail="Браузер завис при генерации картинки.")
-        
     except Exception as e:
         print(f"CRITICAL Блок Исключения: {repr(e)}")
         raise HTTPException(status_code=500, detail=f"Ошибка рендеринга: {str(e)}")
