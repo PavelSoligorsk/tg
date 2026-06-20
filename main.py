@@ -490,6 +490,7 @@ async def render_report(data: ReportRequest):
         if not browser_exec:
             raise RuntimeError("Chromium не найден!")
         
+                # ✅ ЗАМЕНИТЕ ЭТОТ БЛОК:
         cmd = [
             browser_exec,
             "--headless",
@@ -497,7 +498,7 @@ async def render_report(data: ReportRequest):
             "--disable-setuid-sandbox",
             "--disable-gpu",
             "--disable-dev-shm-usage",
-            "--print-to-pdf=" + pdf_file,
+            f"--print-to-pdf={pdf_file}",
             "--no-pdf-header-footer",
             html_file
         ]
@@ -621,15 +622,24 @@ def generate_report_html(data: ReportRequest) -> str:
         {auto_render_include}
         <style>
             * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+
+            @page {{
+        size: 1100px 9999px;
+        margin: 0;
+    }}
+    
+    * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+    
+    body {{ 
+        font-family: 'Inter', system-ui, -apple-system, sans-serif; 
+        padding: 50px 60px; 
+        background: #ffffff;
+        color: #0f172a;
+        width: 1100px;
+        margin: 0 auto;
+    }}
             
-            body {{ 
-                font-family: 'Inter', system-ui, -apple-system, sans-serif; 
-                padding: 50px 60px; 
-                background: #ffffff;
-                color: #0f172a;
-                width: 1100px;
-                margin: 0 auto;
-            }}
+          
             
             .header {{ 
                 border-bottom: 4px solid #0f172a; 
