@@ -550,14 +550,10 @@ def generate_report_html(data: ReportRequest) -> str:
         is_unanswered = not answer or (isinstance(answer, list) and len(answer) == 0)
         is_correct = check_answer(task, answer)
         
-        # Рендерим Markdown для условия
         content_html = markdown_to_html(task.get("content", ""))
-        
-        # Рендерим Markdown для ответов
         user_answer_html = markdown_to_html(format_answer_md(task, answer) or '—')
         correct_answer_html = markdown_to_html(format_correct_answer_md(task))
         
-        # Опции
         options_html = ""
         if not task.get("is_open_answer") and task.get("options"):
             options_html = '<div class="options-list">'
@@ -565,7 +561,6 @@ def generate_report_html(data: ReportRequest) -> str:
                 options_html += f'<div class="option"><strong>{opt_idx + 1}.</strong> {opt}</div>'
             options_html += '</div>'
         
-        # AI решение
         ai_html = ""
         if task.get("ai_solution"):
             ai_content = markdown_to_html(task["ai_solution"])
@@ -576,7 +571,6 @@ def generate_report_html(data: ReportRequest) -> str:
             </div>
             """
         
-        # Чертеж
         drawing_html = ""
         if drawing:
             drawing_html = f"""
@@ -598,7 +592,6 @@ def generate_report_html(data: ReportRequest) -> str:
                 <div class="task-content">{content_html}</div>
                 {options_html}
                 {drawing_html}
-                
                 <div class="answers-grid">
                     <div class="answer-box user-answer">
                         <div class="answer-label">Ваш ответ:</div>
@@ -609,13 +602,11 @@ def generate_report_html(data: ReportRequest) -> str:
                         <div>{correct_answer_html}</div>
                     </div>
                 </div>
-                
                 {ai_html}
             </div>
         </div>
         """
     
-    # Полный HTML с поддержкой KaTeX
     css_include = f"<style>{GLOBAL_ASSETS['css']}</style>" if GLOBAL_ASSETS.get('css') else '<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">'
     js_include = f"<script>{GLOBAL_ASSETS['js']}</script>" if GLOBAL_ASSETS.get('js') else '<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>'
     auto_render_include = f"<script>{GLOBAL_ASSETS['auto_js']}</script>" if GLOBAL_ASSETS.get('auto_js') else '<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>'
@@ -630,175 +621,238 @@ def generate_report_html(data: ReportRequest) -> str:
         {auto_render_include}
         <style>
             * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+            
             body {{ 
-                font-family: 'Inter', system-ui, sans-serif; 
-                padding: 40px; 
-                background: white;
+                font-family: 'Inter', system-ui, -apple-system, sans-serif; 
+                padding: 50px 60px; 
+                background: #ffffff;
                 color: #0f172a;
+                width: 1100px;
+                margin: 0 auto;
             }}
             
             .header {{ 
                 border-bottom: 4px solid #0f172a; 
-                padding-bottom: 30px; 
-                margin-bottom: 30px;
+                padding-bottom: 35px; 
+                margin-bottom: 40px;
                 display: flex;
                 justify-content: space-between;
                 align-items: flex-end;
+                page-break-inside: avoid;
             }}
-            .header h1 {{ font-size: 36px; font-weight: 900; }}
+            .header h1 {{ font-size: 38px; font-weight: 900; letter-spacing: -0.5px; }}
             .header .score {{ 
-                font-size: 48px; 
+                font-size: 52px; 
                 font-weight: 900; 
                 color: #2563eb;
+            }}
+            .header .subtitle {{
+                color: #64748b;
+                margin-top: 8px;
+                font-size: 14px;
             }}
             
             .stats-grid {{
                 display: grid;
                 grid-template-columns: repeat(3, 1fr);
-                gap: 16px;
+                gap: 20px;
                 background: #f8fafc;
-                padding: 24px;
+                padding: 28px;
                 border-radius: 24px;
-                margin-bottom: 40px;
+                margin-bottom: 45px;
+                border: 1px solid #e2e8f0;
+                page-break-inside: avoid;
             }}
             .stat-item {{
                 text-align: center;
-                padding: 16px;
+                padding: 20px;
                 border-right: 1px solid #e2e8f0;
             }}
             .stat-item:last-child {{ border-right: none; }}
-            .stat-value {{ font-size: 28px; font-weight: 900; }}
-            .stat-label {{ font-size: 10px; font-weight: 700; text-transform: uppercase; color: #94a3b8; margin-top: 4px; }}
+            .stat-value {{ font-size: 32px; font-weight: 900; }}
+            .stat-label {{ font-size: 11px; font-weight: 700; text-transform: uppercase; color: #94a3b8; margin-top: 6px; letter-spacing: 1px; }}
             
             .task-card {{
                 border: 1px solid #e2e8f0;
                 border-radius: 24px;
                 overflow: hidden;
-                margin-bottom: 24px;
+                margin-bottom: 30px;
                 page-break-inside: avoid;
+                background: #ffffff;
             }}
             .task-header {{
-                padding: 20px 24px;
+                padding: 22px 28px;
                 display: flex;
                 justify-content: space-between;
+                align-items: center;
                 font-weight: 700;
                 font-size: 14px;
                 text-transform: uppercase;
+                letter-spacing: 1px;
             }}
-            .task-header.correct {{ background: #f0fdf4; }}
-            .task-header.incorrect {{ background: #fef2f2; }}
-            .task-header.unanswered {{ background: #f8fafc; }}
+            .task-header.correct {{ background: #f0fdf4; border-bottom: 1px solid #bbf7d0; }}
+            .task-header.incorrect {{ background: #fef2f2; border-bottom: 1px solid #fecaca; }}
+            .task-header.unanswered {{ background: #f8fafc; border-bottom: 1px solid #e2e8f0; }}
             
-            .task-body {{ padding: 32px; }}
-            .task-content {{ font-size: 16px; line-height: 1.7; margin-bottom: 20px; }}
+            .task-body {{ padding: 32px; page-break-inside: avoid; }}
+            .task-content {{ font-size: 17px; line-height: 1.8; margin-bottom: 24px; color: #1e293b; }}
             
-            /* Markdown стили */
-            .task-content p {{ margin-bottom: 0.75rem; }}
-            .task-content img {{ 
-                max-width: 550px;
-                height: auto;
-                margin: 1.5rem auto;
-                display: block;
-                border-radius: 12px;
+            /* Таблицы */
+            .table-wrapper {{
+                overflow-x: auto;
+                margin: 20px 0;
+                border-radius: 14px;
+                border: 1px solid #e2e8f0;
             }}
-            .task-content table {{ 
+            .table-wrapper table {{
                 width: 100%;
                 border-collapse: collapse;
-                margin: 16px 0;
+                margin: 0;
+                font-size: 15px;
             }}
-            .task-content th, .task-content td {{ 
+            .table-wrapper th,
+            .table-wrapper td {{
                 border: 1px solid #e2e8f0;
-                padding: 12px;
+                padding: 14px 18px;
                 text-align: left;
             }}
-            .task-content th {{ background: #f8fafc; font-weight: 700; }}
+            .table-wrapper th {{
+                background: #f8fafc;
+                font-weight: 700;
+                color: #0f172a;
+                font-size: 14px;
+            }}
+            .table-wrapper td {{
+                background: #ffffff;
+                color: #334155;
+            }}
+            .table-wrapper tr:nth-child(even) td {{
+                background: #f8fafc;
+            }}
+            
+            /* Изображения */
+            .task-content img {{ 
+                max-width: 600px;
+                height: auto;
+                margin: 24px auto;
+                display: block;
+                border-radius: 14px;
+                border: 1px solid #e2e8f0;
+            }}
+            
+            /* Код */
             .task-content code {{
                 background: #f1f5f9;
-                padding: 2px 6px;
-                border-radius: 4px;
+                padding: 3px 8px;
+                border-radius: 6px;
                 font-size: 0.9em;
+                color: #dc2626;
             }}
             .task-content pre {{
                 background: #1e293b;
                 color: #e2e8f0;
-                padding: 16px;
-                border-radius: 12px;
+                padding: 20px;
+                border-radius: 14px;
                 overflow-x: auto;
-                margin: 16px 0;
+                margin: 20px 0;
+                font-size: 14px;
+                line-height: 1.6;
             }}
             .task-content pre code {{
                 background: none;
                 padding: 0;
                 color: inherit;
             }}
+            
+            /* Цитаты */
             .task-content blockquote {{
-                border-left: 4px solid #e2e8f0;
-                padding-left: 16px;
-                margin: 16px 0;
-                color: #64748b;
+                border-left: 4px solid #94a3b8;
+                padding: 12px 20px;
+                margin: 20px 0;
+                color: #475569;
                 font-style: italic;
+                background: #f8fafc;
+                border-radius: 0 12px 12px 0;
             }}
             
-            .options-list {{ margin: 16px 0; }}
-            .option {{ padding: 8px 0; font-size: 15px; }}
+            /* Параграфы */
+            .task-content p {{ margin-bottom: 1rem; }}
+            
+            .options-list {{ margin: 20px 0; }}
+            .option {{ padding: 10px 0; font-size: 16px; color: #334155; }}
+            .option strong {{ color: #0f172a; margin-right: 8px; }}
             
             .answers-grid {{
                 display: grid;
                 grid-template-columns: 1fr 1fr;
-                gap: 16px;
-                margin-top: 24px;
+                gap: 20px;
+                margin-top: 28px;
+                page-break-inside: avoid;
             }}
             .answer-box {{
-                padding: 20px;
-                border-radius: 16px;
+                padding: 24px;
+                border-radius: 18px;
                 border: 1px solid #e2e8f0;
             }}
             .answer-box.user-answer {{ background: #f8fafc; }}
             .answer-box.correct-answer {{ background: #eff6ff; border-color: #bfdbfe; }}
             .answer-label {{
-                font-size: 10px;
+                font-size: 11px;
                 font-weight: 700;
                 text-transform: uppercase;
                 color: #94a3b8;
-                margin-bottom: 8px;
+                margin-bottom: 12px;
+                letter-spacing: 1px;
             }}
+            .answer-box p {{ margin-bottom: 0.5rem; }}
             
             .drawing-section {{
-                margin: 24px 0;
+                margin: 28px 0;
                 text-align: center;
+                page-break-inside: avoid;
             }}
             .drawing-image {{
-                max-width: 450px;
-                max-height: 320px;
-                border-radius: 12px;
+                max-width: 500px;
+                max-height: 350px;
+                border-radius: 14px;
                 border: 1px solid #e2e8f0;
+                box-shadow: 0 4px 12px rgba(0,0,0,0.05);
             }}
             
             .ai-solution {{
-                margin-top: 24px;
-                padding: 24px;
+                margin-top: 28px;
+                padding: 28px;
                 background: #f5f3ff;
                 border: 1px solid #ddd6fe;
-                border-radius: 16px;
+                border-radius: 18px;
+                page-break-inside: avoid;
             }}
             .ai-solution h4 {{ 
-                font-size: 12px; 
+                font-size: 13px; 
                 font-weight: 700; 
                 text-transform: uppercase; 
                 color: #7c3aed; 
-                margin-bottom: 12px; 
+                margin-bottom: 16px; 
+                letter-spacing: 1px;
             }}
-            .ai-content p {{ margin-bottom: 0.5rem; }}
+            .ai-content p {{ margin-bottom: 0.75rem; line-height: 1.7; }}
+            .ai-content img {{
+                max-width: 500px;
+                margin: 16px auto;
+                display: block;
+                border-radius: 12px;
+            }}
             
             /* KaTeX */
             .katex-display {{ 
-                margin: 1.25rem 0 !important; 
-                padding: 0.5rem;
-                background-color: #F8FAFC;
-                border-radius: 0.75rem;
+                margin: 1.5rem 0 !important; 
+                padding: 0.75rem;
+                background-color: #f8fafc;
+                border-radius: 12px;
                 text-align: center;
+                overflow-x: auto;
             }}
-            .katex {{ font-size: 1.1em; }}
+            .katex {{ font-size: 1.15em; }}
             
             .footer {{
                 text-align: center;
@@ -806,20 +860,21 @@ def generate_report_html(data: ReportRequest) -> str:
                 font-size: 12px;
                 font-weight: 700;
                 text-transform: uppercase;
-                padding-top: 32px;
+                letter-spacing: 2px;
+                padding-top: 40px;
                 border-top: 1px solid #e2e8f0;
-                margin-top: 40px;
+                margin-top: 50px;
+                page-break-inside: avoid;
             }}
-            
         </style>
     </head>
     <body>
         <div class="header">
             <div>
                 <h1>{test.get("title", "Результаты теста")}</h1>
-                <p style="color: #64748b; margin-top: 8px;">
+                <div class="subtitle">
                     {user.get("first_name", "")} {user.get("last_name", "")} • {result.get("completed_at", "")}
-                </p>
+                </div>
             </div>
             <div class="score">{score_percentage}%</div>
         </div>
@@ -859,7 +914,6 @@ def generate_report_html(data: ReportRequest) -> str:
     """
     
     return html
-
 
 def markdown_to_html(text: str) -> str:
     """Конвертирует Markdown в HTML с защитой LaTeX формул"""
