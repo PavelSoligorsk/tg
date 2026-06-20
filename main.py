@@ -442,3 +442,335 @@ async def send_math(msg: MathMessage):
     finally:
         if os.path.exists(html_file): os.remove(html_file)
         if os.path.exists(img_file): os.remove(img_file)
+
+# === В ЭТОМ СЕРВИСЕ (рендеринг) ===
+from fastapi.responses import Response
+class ReportRequest(BaseModel):
+    test: dict
+    user: dict
+    result: dict
+    userAnswers: dict
+    stats: dict
+    drawings: dict = {}  # чертежи (base64 или URL)
+
+
+@app.post("/render-report")
+async def render_report(data: ReportRequest):
+    """
+    Принимает данные отчёта и возвращает готовый PDF.
+    Использует Chromium/Puppeteer для рендеринга HTML → PDF.
+    """
+    
+    # 1. Генерируем HTML по шаблону
+    html_content = generate_report_html(data)
+    
+    # 2. Сохраняем во временный файл
+    unique_id = uuid.uuid4().hex
+    html_file = f"/tmp/report_{unique_id}.html"
+    pdf_file = f"/tmp/report_{unique_id}.pdf"
+    
+    try:
+        with open(html_file, "w", encoding="utf-8") as f:
+            f.write(html_content)
+        
+        # 3. Рендерим через Chromium
+        browser_exec = get_chromium_path()
+        if not browser_exec:
+            raise RuntimeError("Chromium не найден!")
+        
+        cmd = [
+            browser_exec,
+            "--headless",
+            "--no-sandbox",
+            "--disable-setuid-sandbox",
+            "--disable-gpu",
+            "--disable-dev-shm-usage",
+            "--print-to-pdf=" + pdf_file,
+            "--no-pdf-header-footer",
+            html_file
+        ]
+        
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        
+        if result.returncode != 0 or not os.path.exists(pdf_file):
+            raise RuntimeError(f"Ошибка Chromium: {result.stderr}")
+        
+        # 4. Читаем PDF и возвращаем
+        with open(pdf_file, "rb") as f:
+            pdf_bytes = f.read()
+        
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf"
+        )
+        
+    finally:
+        # Чистим временные файлы
+        if os.path.exists(html_file):
+            os.remove(html_file)
+        if os.path.exists(pdf_file):
+            os.remove(pdf_file)
+
+
+def generate_report_html(data: ReportRequest) -> str:
+    """
+    Генерирует HTML для красивого отчёта.
+    Использует те же стили, что и в TestReport.jsx.
+    """
+    
+    test = data.test
+    user = data.user
+    result = data.result
+    user_answers = data.userAnswers
+    stats = data.stats
+    drawings = data.drawings
+    
+    # Подсчёт статистики
+    total = stats.get("total", len(test.get("tasks", [])))
+    correct = stats.get("correct", 0)
+    score_percentage = round((correct / total * 100), 1) if total > 0 else 0
+    
+    # Генерация карточек заданий
+    tasks_html = ""
+    for idx, task in enumerate(test.get("tasks", [])):
+        answer = user_answers.get(str(task["id"]))
+        drawing = drawings.get(str(task["id"]))
+        
+        is_unanswered = not answer
+        is_correct = check_answer(task, answer)
+        
+        # Варианты ответов
+        options_html = ""
+        if not task.get("is_open_answer") and task.get("options"):
+            options_html = '<div class="options-list">'
+            for opt_idx, opt in enumerate(task["options"]):
+                options_html += f'<div class="option">{opt_idx + 1}. {opt}</div>'
+            options_html += '</div>'
+        
+        tasks_html += f"""
+        <div class="task-card">
+            <div class="task-header {'correct' if is_correct else 'incorrect' if not is_unanswered else 'unanswered'}">
+                <span>Задание {idx + 1}</span>
+                <span>{'✅ Верно' if is_correct else '❌ Неверно' if not is_unanswered else '⚠️ Нет ответа'}</span>
+            </div>
+            <div class="task-body">
+                <div class="task-content">{task.get("content", "")}</div>
+                {options_html}
+                
+                <div class="answers-grid">
+                    <div class="answer-box user-answer">
+                        <div class="answer-label">Ваш ответ:</div>
+                        <div>{format_answer(task, answer) or '—'}</div>
+                    </div>
+                    <div class="answer-box correct-answer">
+                        <div class="answer-label">Правильный ответ:</div>
+                        <div>{format_correct_answer(task)}</div>
+                    </div>
+                </div>
+                
+                {f'<div class="drawing"><img src="{drawing}" /></div>' if drawing else ''}
+                
+                {f'<div class="ai-solution"><h4>🤖 Разбор от ИИ:</h4><div>{task.get("ai_solution", "")}</div></div>' if task.get("ai_solution") else ''}
+            </div>
+        </div>
+        """
+    
+    # Полный HTML
+    html = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <style>
+            * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+            body {{ 
+                font-family: 'Inter', system-ui, sans-serif; 
+                padding: 40px; 
+                background: white;
+                color: #0f172a;
+            }}
+            
+            .header {{ 
+                border-bottom: 4px solid #0f172a; 
+                padding-bottom: 30px; 
+                margin-bottom: 30px;
+                display: flex;
+                justify-content: space-between;
+                align-items: flex-end;
+            }}
+            .header h1 {{ font-size: 36px; font-weight: 900; }}
+            .header .score {{ 
+                font-size: 48px; 
+                font-weight: 900; 
+                color: #2563eb;
+            }}
+            
+            .stats-grid {{
+                display: grid;
+                grid-template-columns: repeat(3, 1fr);
+                gap: 16px;
+                background: #f8fafc;
+                padding: 24px;
+                border-radius: 24px;
+                margin-bottom: 40px;
+            }}
+            .stat-item {{
+                text-align: center;
+                padding: 16px;
+                border-right: 1px solid #e2e8f0;
+            }}
+            .stat-item:last-child {{ border-right: none; }}
+            .stat-value {{ font-size: 28px; font-weight: 900; }}
+            .stat-label {{ font-size: 10px; font-weight: 700; text-transform: uppercase; color: #94a3b8; margin-top: 4px; }}
+            
+            .task-card {{
+                border: 1px solid #e2e8f0;
+                border-radius: 24px;
+                overflow: hidden;
+                margin-bottom: 24px;
+            }}
+            .task-header {{
+                padding: 20px 24px;
+                display: flex;
+                justify-content: space-between;
+                font-weight: 700;
+                font-size: 14px;
+                text-transform: uppercase;
+            }}
+            .task-header.correct {{ background: #f0fdf4; }}
+            .task-header.incorrect {{ background: #fef2f2; }}
+            .task-header.unanswered {{ background: #f8fafc; }}
+            
+            .task-body {{ padding: 32px; }}
+            .task-content {{ font-size: 16px; line-height: 1.7; margin-bottom: 20px; }}
+            
+            .options-list {{ margin: 16px 0; }}
+            .option {{ padding: 8px 0; font-size: 15px; }}
+            
+            .answers-grid {{
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 16px;
+                margin-top: 24px;
+            }}
+            .answer-box {{
+                padding: 20px;
+                border-radius: 16px;
+                border: 1px solid #e2e8f0;
+            }}
+            .answer-box.user-answer {{ background: #f8fafc; }}
+            .answer-box.correct-answer {{ background: #eff6ff; border-color: #bfdbfe; }}
+            .answer-label {{
+                font-size: 10px;
+                font-weight: 700;
+                text-transform: uppercase;
+                color: #94a3b8;
+                margin-bottom: 8px;
+            }}
+            
+            .drawing img {{
+                max-width: 450px;
+                max-height: 320px;
+                margin: 24px auto;
+                display: block;
+                border-radius: 12px;
+                border: 1px solid #e2e8f0;
+            }}
+            
+            .ai-solution {{
+                margin-top: 24px;
+                padding: 24px;
+                background: #f5f3ff;
+                border: 1px solid #ddd6fe;
+                border-radius: 16px;
+            }}
+            .ai-solution h4 {{ font-size: 12px; font-weight: 700; text-transform: uppercase; color: #7c3aed; margin-bottom: 12px; }}
+            
+            .footer {{
+                text-align: center;
+                color: #94a3b8;
+                font-size: 12px;
+                font-weight: 700;
+                text-transform: uppercase;
+                padding-top: 32px;
+                border-top: 1px solid #e2e8f0;
+                margin-top: 40px;
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="header">
+            <div>
+                <h1>{test.get("title", "Результаты теста")}</h1>
+                <p style="color: #64748b; margin-top: 8px;">
+                    {user.get("first_name", "")} {user.get("last_name", "")} • {result.get("completed_at", "")}
+                </p>
+            </div>
+            <div class="score">{score_percentage}%</div>
+        </div>
+        
+        <div class="stats-grid">
+            <div class="stat-item">
+                <div class="stat-value" style="color: #16a34a;">{correct}</div>
+                <div class="stat-label">Правильных</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-value" style="color: #dc2626;">{total - correct - (stats.get('unanswered', 0))}</div>
+                <div class="stat-label">Ошибок</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-value" style="color: #64748b;">{stats.get('unanswered', 0)}</div>
+                <div class="stat-label">Пропущено</div>
+            </div>
+        </div>
+        
+        {tasks_html}
+        
+        <div class="footer">
+            Отчёт сгенерирован автоматически • testers-production-46d5.up.railway.app
+        </div>
+    </body>
+    </html>
+    """
+    
+    return html
+
+
+def check_answer(task: dict, user_answer) -> bool:
+    """Проверка правильности ответа"""
+    if not user_answer:
+        return False
+    
+    if task.get("is_open_answer"):
+        return str(user_answer).strip().lower() == str(task.get("answer", "")).strip().lower()
+    else:
+        correct = task.get("answer", [])
+        if isinstance(correct, str):
+            correct = [correct]
+        user = user_answer if isinstance(user_answer, list) else [user_answer]
+        return sorted(correct) == sorted(user)
+
+
+def format_answer(task: dict, user_answer) -> str:
+    """Форматирование ответа пользователя"""
+    if not user_answer:
+        return "—"
+    
+    if task.get("is_open_answer"):
+        return str(user_answer)
+    else:
+        answers = user_answer if isinstance(user_answer, list) else [user_answer]
+        return ", ".join(str(a) for a in answers)
+
+
+def format_correct_answer(task: dict) -> str:
+    """Форматирование правильного ответа"""
+    answer = task.get("answer", "")
+    
+    if task.get("is_open_answer"):
+        return str(answer)
+    else:
+        answers = answer if isinstance(answer, list) else [answer]
+        if task.get("options"):
+            return ", ".join(f"{a}. {task['options'][int(a)-1]}" for a in answers if a.isdigit() and int(a) <= len(task["options"]))
+        return ", ".join(str(a) for a in answers)
