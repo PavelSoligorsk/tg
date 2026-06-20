@@ -810,6 +810,7 @@ def generate_report_html(data: ReportRequest) -> str:
                 border-top: 1px solid #e2e8f0;
                 margin-top: 40px;
             }}
+            
         </style>
     </head>
     <body>
@@ -874,6 +875,19 @@ def markdown_to_html(text: str) -> str:
     protected = re.sub(r'\$\$.*?\$\$', placeholder_repl, text, flags=re.DOTALL)
     protected = re.sub(r'\$.*?\$', placeholder_repl, protected)
     
+    # Добавляем пустые строки перед таблицами для корректного парсинга
+    lines = protected.split('\n')
+    processed = []
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith('|') and not stripped.startswith('|-'):  # Это строка таблицы (не разделитель)
+            if i > 0 and lines[i-1].strip() != '' and not lines[i-1].strip().startswith('|'):
+                processed.append('')  # Пустая строка перед таблицей
+        elif i > 0 and lines[i-1].strip().startswith('|') and stripped != '' and not stripped.startswith('|'):
+            processed.append('')  # Пустая строка после таблицы
+        processed.append(line)
+    protected = '\n'.join(processed)
+    
     # Конвертируем Markdown в HTML
     html = markdown.markdown(protected, extensions=['tables', 'fenced_code', 'codehilite'])
     
@@ -881,8 +895,19 @@ def markdown_to_html(text: str) -> str:
     for idx, block in enumerate(latex_blocks):
         html = html.replace(f"@@LATEX_{idx}@@", block)
     
+    # Оборачиваем таблицы в контейнер для прокрутки
+    html = re.sub(
+        r'(<table>)',
+        r'<div class="table-wrapper">\1',
+        html
+    )
+    html = re.sub(
+        r'(</table>)',
+        r'\1</div>',
+        html
+    )
+    
     return html
-
 
 def format_answer_md(task: dict, user_answer) -> str:
     """Форматирование ответа пользователя в Markdown"""
