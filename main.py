@@ -9,16 +9,28 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import httpx
 import markdown  
+from fastapi.middleware.cors import CORSMiddleware  # ← ДОБАВИТЬ
 from bs4 import BeautifulSoup
 from PIL import Image, ImageChops
 
 load_dotenv()
+
+
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN не найден в переменных окружения / .env файле!")
 
 app = FastAPI(title="KaTeX Premium Render Bot API")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Разрешить все домены
+    allow_credentials=True,
+    allow_methods=["*"],   # Разрешить все методы (GET, POST, OPTIONS и т.д.)
+    allow_headers=["*"],   # Разрешить все заголовки
+)
+
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
 GLOBAL_ASSETS = {"css": "", "js": "", "auto_js": ""}
