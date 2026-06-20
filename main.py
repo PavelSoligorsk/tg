@@ -525,10 +525,7 @@ async def render_report(data: ReportRequest):
 
 
 def generate_report_html(data: ReportRequest) -> str:
-    """
-    Генерирует HTML для красивого отчёта.
-    Использует те же стили, что и в TestReport.jsx.
-    """
+    """Генерирует HTML с поддержкой Markdown (KaTeX + таблицы + картинки)"""
     
     test = data.test
     user = data.user
@@ -537,62 +534,100 @@ def generate_report_html(data: ReportRequest) -> str:
     stats = data.stats
     drawings = data.drawings
     
-    # Подсчёт статистики
     total = stats.get("total", len(test.get("tasks", [])))
     correct = stats.get("correct", 0)
+    incorrect = stats.get("incorrect", 0)
+    unanswered = stats.get("unanswered", 0)
     score_percentage = round((correct / total * 100), 1) if total > 0 else 0
     
     # Генерация карточек заданий
     tasks_html = ""
     for idx, task in enumerate(test.get("tasks", [])):
-        answer = user_answers.get(str(task["id"]))
-        drawing = drawings.get(str(task["id"]))
+        task_id = str(task["id"])
+        answer = user_answers.get(task_id)
+        drawing = drawings.get(task_id)
         
-        is_unanswered = not answer
+        is_unanswered = not answer or (isinstance(answer, list) and len(answer) == 0)
         is_correct = check_answer(task, answer)
         
-        # Варианты ответов
+        # Рендерим Markdown для условия
+        content_html = markdown_to_html(task.get("content", ""))
+        
+        # Рендерим Markdown для ответов
+        user_answer_html = markdown_to_html(format_answer_md(task, answer) or '—')
+        correct_answer_html = markdown_to_html(format_correct_answer_md(task))
+        
+        # Опции
         options_html = ""
         if not task.get("is_open_answer") and task.get("options"):
             options_html = '<div class="options-list">'
             for opt_idx, opt in enumerate(task["options"]):
-                options_html += f'<div class="option">{opt_idx + 1}. {opt}</div>'
+                options_html += f'<div class="option"><strong>{opt_idx + 1}.</strong> {opt}</div>'
             options_html += '</div>'
+        
+        # AI решение
+        ai_html = ""
+        if task.get("ai_solution"):
+            ai_content = markdown_to_html(task["ai_solution"])
+            ai_html = f"""
+            <div class="ai-solution">
+                <h4>🤖 Разбор от ИИ:</h4>
+                <div class="ai-content">{ai_content}</div>
+            </div>
+            """
+        
+        # Чертеж
+        drawing_html = ""
+        if drawing:
+            drawing_html = f"""
+            <div class="drawing-section">
+                <img src="{drawing}" alt="Чертеж" class="drawing-image" />
+            </div>
+            """
+        
+        status_class = 'correct' if is_correct else 'incorrect' if not is_unanswered else 'unanswered'
+        status_text = '✅ Верно' if is_correct else '❌ Неверно' if not is_unanswered else '⚠️ Нет ответа'
         
         tasks_html += f"""
         <div class="task-card">
-            <div class="task-header {'correct' if is_correct else 'incorrect' if not is_unanswered else 'unanswered'}">
+            <div class="task-header {status_class}">
                 <span>Задание {idx + 1}</span>
-                <span>{'✅ Верно' if is_correct else '❌ Неверно' if not is_unanswered else '⚠️ Нет ответа'}</span>
+                <span>{status_text}</span>
             </div>
             <div class="task-body">
-                <div class="task-content">{task.get("content", "")}</div>
+                <div class="task-content">{content_html}</div>
                 {options_html}
+                {drawing_html}
                 
                 <div class="answers-grid">
                     <div class="answer-box user-answer">
                         <div class="answer-label">Ваш ответ:</div>
-                        <div>{format_answer(task, answer) or '—'}</div>
+                        <div>{user_answer_html}</div>
                     </div>
                     <div class="answer-box correct-answer">
                         <div class="answer-label">Правильный ответ:</div>
-                        <div>{format_correct_answer(task)}</div>
+                        <div>{correct_answer_html}</div>
                     </div>
                 </div>
                 
-                {f'<div class="drawing"><img src="{drawing}" /></div>' if drawing else ''}
-                
-                {f'<div class="ai-solution"><h4>🤖 Разбор от ИИ:</h4><div>{task.get("ai_solution", "")}</div></div>' if task.get("ai_solution") else ''}
+                {ai_html}
             </div>
         </div>
         """
     
-    # Полный HTML
+    # Полный HTML с поддержкой KaTeX
+    css_include = f"<style>{GLOBAL_ASSETS['css']}</style>" if GLOBAL_ASSETS.get('css') else '<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">'
+    js_include = f"<script>{GLOBAL_ASSETS['js']}</script>" if GLOBAL_ASSETS.get('js') else '<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>'
+    auto_render_include = f"<script>{GLOBAL_ASSETS['auto_js']}</script>" if GLOBAL_ASSETS.get('auto_js') else '<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>'
+    
     html = f"""
     <!DOCTYPE html>
     <html>
     <head>
         <meta charset="utf-8">
+        {css_include}
+        {js_include}
+        {auto_render_include}
         <style>
             * {{ margin: 0; padding: 0; box-sizing: border-box; }}
             body {{ 
@@ -640,6 +675,7 @@ def generate_report_html(data: ReportRequest) -> str:
                 border-radius: 24px;
                 overflow: hidden;
                 margin-bottom: 24px;
+                page-break-inside: avoid;
             }}
             .task-header {{
                 padding: 20px 24px;
@@ -655,6 +691,53 @@ def generate_report_html(data: ReportRequest) -> str:
             
             .task-body {{ padding: 32px; }}
             .task-content {{ font-size: 16px; line-height: 1.7; margin-bottom: 20px; }}
+            
+            /* Markdown стили */
+            .task-content p {{ margin-bottom: 0.75rem; }}
+            .task-content img {{ 
+                max-width: 550px;
+                height: auto;
+                margin: 1.5rem auto;
+                display: block;
+                border-radius: 12px;
+            }}
+            .task-content table {{ 
+                width: 100%;
+                border-collapse: collapse;
+                margin: 16px 0;
+            }}
+            .task-content th, .task-content td {{ 
+                border: 1px solid #e2e8f0;
+                padding: 12px;
+                text-align: left;
+            }}
+            .task-content th {{ background: #f8fafc; font-weight: 700; }}
+            .task-content code {{
+                background: #f1f5f9;
+                padding: 2px 6px;
+                border-radius: 4px;
+                font-size: 0.9em;
+            }}
+            .task-content pre {{
+                background: #1e293b;
+                color: #e2e8f0;
+                padding: 16px;
+                border-radius: 12px;
+                overflow-x: auto;
+                margin: 16px 0;
+            }}
+            .task-content pre code {{
+                background: none;
+                padding: 0;
+                color: inherit;
+            }}
+            .task-content blockquote {{
+                border-left: 4px solid #e2e8f0;
+                padding-left: 16px;
+                margin: 16px 0;
+                color: #64748b;
+                font-style: italic;
+            }}
             
             .options-list {{ margin: 16px 0; }}
             .option {{ padding: 8px 0; font-size: 15px; }}
@@ -680,11 +763,13 @@ def generate_report_html(data: ReportRequest) -> str:
                 margin-bottom: 8px;
             }}
             
-            .drawing img {{
+            .drawing-section {{
+                margin: 24px 0;
+                text-align: center;
+            }}
+            .drawing-image {{
                 max-width: 450px;
                 max-height: 320px;
-                margin: 24px auto;
-                display: block;
                 border-radius: 12px;
                 border: 1px solid #e2e8f0;
             }}
@@ -696,7 +781,24 @@ def generate_report_html(data: ReportRequest) -> str:
                 border: 1px solid #ddd6fe;
                 border-radius: 16px;
             }}
-            .ai-solution h4 {{ font-size: 12px; font-weight: 700; text-transform: uppercase; color: #7c3aed; margin-bottom: 12px; }}
+            .ai-solution h4 {{ 
+                font-size: 12px; 
+                font-weight: 700; 
+                text-transform: uppercase; 
+                color: #7c3aed; 
+                margin-bottom: 12px; 
+            }}
+            .ai-content p {{ margin-bottom: 0.5rem; }}
+            
+            /* KaTeX */
+            .katex-display {{ 
+                margin: 1.25rem 0 !important; 
+                padding: 0.5rem;
+                background-color: #F8FAFC;
+                border-radius: 0.75rem;
+                text-align: center;
+            }}
+            .katex {{ font-size: 1.1em; }}
             
             .footer {{
                 text-align: center;
@@ -727,11 +829,11 @@ def generate_report_html(data: ReportRequest) -> str:
                 <div class="stat-label">Правильных</div>
             </div>
             <div class="stat-item">
-                <div class="stat-value" style="color: #dc2626;">{total - correct - (stats.get('unanswered', 0))}</div>
+                <div class="stat-value" style="color: #dc2626;">{incorrect}</div>
                 <div class="stat-label">Ошибок</div>
             </div>
             <div class="stat-item">
-                <div class="stat-value" style="color: #64748b;">{stats.get('unanswered', 0)}</div>
+                <div class="stat-value" style="color: #64748b;">{unanswered}</div>
                 <div class="stat-label">Пропущено</div>
             </div>
         </div>
@@ -739,14 +841,84 @@ def generate_report_html(data: ReportRequest) -> str:
         {tasks_html}
         
         <div class="footer">
-            Отчёт сгенерирован автоматически • testers-production-46d5.up.railway.app
+            Отчёт сгенерирован автоматически • tests-production-46d5.up.railway.app
         </div>
+        
+        <script>
+            renderMathInElement(document.body, {{
+                delimiters: [
+                    {{left: "$$", right: "$$", display: true}},
+                    {{left: "$", right: "$", display: false}}
+                ],
+                throwOnError: false
+            }});
+        </script>
     </body>
     </html>
     """
     
     return html
 
+
+def markdown_to_html(text: str) -> str:
+    """Конвертирует Markdown в HTML с защитой LaTeX формул"""
+    if not text:
+        return ""
+    
+    # Защита LaTeX блоков
+    latex_blocks = []
+    def placeholder_repl(match):
+        latex_blocks.append(match.group(0))
+        return f"@@LATEX_{len(latex_blocks)-1}@@"
+    
+    protected = re.sub(r'\$\$.*?\$\$', placeholder_repl, text, flags=re.DOTALL)
+    protected = re.sub(r'\$.*?\$', placeholder_repl, protected)
+    
+    # Конвертируем Markdown в HTML
+    html = markdown.markdown(protected, extensions=['tables', 'fenced_code', 'codehilite'])
+    
+    # Возвращаем формулы
+    for idx, block in enumerate(latex_blocks):
+        html = html.replace(f"@@LATEX_{idx}@@", block)
+    
+    return html
+
+
+def format_answer_md(task: dict, user_answer) -> str:
+    """Форматирование ответа пользователя в Markdown"""
+    if not user_answer:
+        return "—"
+    
+    if task.get("is_open_answer"):
+        return str(user_answer)
+    else:
+        answers = user_answer if isinstance(user_answer, list) else [str(user_answer)]
+        formatted = []
+        for a in answers:
+            opt_idx = int(a) - 1 if a.isdigit() else -1
+            if opt_idx >= 0 and task.get("options") and opt_idx < len(task["options"]):
+                formatted.append(f"**{a}.** {task['options'][opt_idx]}")
+            else:
+                formatted.append(f"**{a}**")
+        return "\n\n".join(formatted)
+
+
+def format_correct_answer_md(task: dict) -> str:
+    """Форматирование правильного ответа в Markdown"""
+    answer = task.get("answer", "")
+    
+    if task.get("is_open_answer"):
+        return str(answer)
+    else:
+        answers = answer if isinstance(answer, list) else [str(answer)]
+        formatted = []
+        for a in answers:
+            opt_idx = int(a) - 1 if a.isdigit() else -1
+            if opt_idx >= 0 and task.get("options") and opt_idx < len(task["options"]):
+                formatted.append(f"**{a}.** {task['options'][opt_idx]}")
+            else:
+                formatted.append(f"**{a}**")
+        return "\n\n".join(formatted)
 
 def check_answer(task: dict, user_answer) -> bool:
     """Проверка правильности ответа"""
