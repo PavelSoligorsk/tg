@@ -4,22 +4,16 @@ import re
 import base64
 import uuid
 import subprocess
-from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import httpx
 import markdown  
-from fastapi.middleware.cors import CORSMiddleware  # ← ДОБАВИТЬ
+from fastapi.middleware.cors import CORSMiddleware
 from bs4 import BeautifulSoup
 from PIL import Image, ImageChops
 
-load_dotenv()
-
-
-
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-if not BOT_TOKEN:
-    raise ValueError("BOT_TOKEN не найден в переменных окружения / .env файле!")
+from app.config import BOT_TOKEN, TELEGRAM_API, CHROMIUM_PATH
+from app.routers.payments import router as payments_router
 
 app = FastAPI(title="KaTeX Premium Render Bot API")
 
@@ -31,7 +25,8 @@ app.add_middleware(
     allow_headers=["*"],   # Разрешить все заголовки
 )
 
-TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
+# Подключаем роутер платежей
+app.include_router(payments_router)
 
 GLOBAL_ASSETS = {"css": "", "js": "", "auto_js": ""}
 
@@ -56,8 +51,8 @@ async def load_katex_assets():
         print(f"ВНИМАНИЕ: Ошибка кэширования ресурсов: {e}")
 
 def get_chromium_path():
-    if os.getenv("CHROMIUM_PATH"):
-        return os.getenv("CHROMIUM_PATH")
+    if CHROMIUM_PATH:
+        return CHROMIUM_PATH
     paths = [
         "/usr/bin/chromium",
         "/usr/bin/chromium-browser",
@@ -455,7 +450,153 @@ async def send_math(msg: MathMessage):
         if os.path.exists(html_file): os.remove(html_file)
         if os.path.exists(img_file): os.remove(img_file)
 
-# === В ЭТОМ СЕРВИСЕ (рендеринг) ===
+
+# ═══════════════════════════════════════════════════════════════
+# Telegram Bot Webhook — приём платежей и команд
+# ═══════════════════════════════════════════════════════════════
+
+import logging
+import re
+from app.bot import (
+    handle_parent_receipt,
+    handle_teacher_confirm,
+    handle_teacher_reject,
+    handle_teacher_status,
+)
+
+logger = logging.getLogger("tg_bot.webhook")
+
+
+@app.post("/webhook")
+async def telegram_webhook(update: dict):
+    """Принимает обновления от Telegram (через setWebhook).
+
+    Маршрутизирует:
+    - Фото → родитель отправил чек → handle_parent_receipt
+    - Команда /confirm → учитель подтверждает → handle_teacher_confirm
+    - Команда /reject  → учитель отклоняет → handle_teacher_reject
+    - Команда /status  → учитель смотрит статус → handle_teacher_status
+    """
+    try:
+        # Telegram шлёт update в поле "message" или "edited_message"
+        message = update.get("message") or update.get("edited_message") or {}
+        if not message:
+            return {"ok": True, "detail": "no message"}
+
+        chat = message.get("chat", {})
+        chat_id = chat.get("id", 0)
+        from_user = message.get("from", {})
+        from_user_id = from_user.get("id", 0)
+
+        # --- Фото (родитель отправил чек) ---
+        if message.get("photo"):
+            msg_id = message.get("message_id", 0)
+            result = await handle_parent_receipt(chat_id, msg_id, from_user_id)
+            return {"ok": True, "action": "parent_receipt", **result}
+
+        # --- Текстовая команда ---
+        text = message.get("text", "")
+        if not text:
+            return {"ok": True, "detail": "no text"}
+
+        # Команды обрабатываем только если это ответ на пересланное фото
+        reply_to = message.get("reply_to_message", {})
+        receipt_msg_id = reply_to.get("message_id", 0) if reply_to else 0
+
+        # /confirm 120.50 @student_username [комментарий]
+        if text.startswith("/confirm"):
+            # Парсим: /confirm <сумма> <tg_id_ученика> [комментарий...]
+            parts = text.split(None, 3)  # ['/confirm', '120.50', '@student', 'комментарий']
+            if len(parts) < 3:
+                async with httpx.AsyncClient() as client:
+                    await client.post(
+                        f"{TELEGRAM_API}/sendMessage",
+                        json={
+                            "chat_id": chat_id,
+                            "text": "❌ Используйте: `/confirm <сумма> <@username_ученика> [комментарий]`",
+                            "parse_mode": "Markdown",
+                        },
+                        timeout=10.0,
+                    )
+                return {"ok": False, "detail": "bad format: /confirm <amount> <tg_student_id>"}
+
+            try:
+                amount = float(parts[1])
+            except ValueError:
+                amount = 0.0
+
+            tg_student_id = parts[2].lstrip("@")
+            comment = parts[3] if len(parts) > 3 else ""
+
+            result = await handle_teacher_confirm(
+                teacher_chat_id=chat_id,
+                teacher_user_id=from_user_id,
+                receipt_message_id=receipt_msg_id,
+                amount=amount,
+                tg_student_id=tg_student_id,
+                comment=comment,
+            )
+            return {"ok": True, "action": "confirm", **result}
+
+        # /reject [причина]
+        elif text.startswith("/reject"):
+            parts = text.split(None, 1)
+            comment = parts[1] if len(parts) > 1 else ""
+            result = await handle_teacher_reject(
+                teacher_chat_id=chat_id,
+                teacher_user_id=from_user_id,
+                receipt_message_id=receipt_msg_id,
+                comment=comment,
+            )
+            return {"ok": True, "action": "reject", **result}
+
+        # /status
+        elif text.startswith("/status"):
+            result = await handle_teacher_status(
+                teacher_chat_id=chat_id,
+                teacher_user_id=from_user_id,
+                receipt_message_id=receipt_msg_id,
+            )
+            return {"ok": True, "action": "status", **result}
+
+        return {"ok": True, "detail": "unknown command"}
+
+    except Exception as e:
+        logger.exception("Webhook error")
+        return {"ok": False, "detail": str(e)}
+
+
+@app.get("/setup-webhook")
+async def setup_webhook(base_url: str | None = None):
+    """Устанавливает webhook для бота.
+
+    Вызови: GET /setup-webhook?base_url=https://your-domain.com
+    Либо прочитает PUBLIC_URL из переменных окружения.
+    """
+    public_url = base_url or os.getenv("PUBLIC_URL", "")
+    if not public_url:
+        return {"ok": False, "detail": "Укажите ?base_url=... или PUBLIC_URL в .env"}
+
+    webhook_url = f"{public_url.rstrip('/')}/webhook"
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(
+            f"{TELEGRAM_API}/setWebhook",
+            params={"url": webhook_url},
+            timeout=15.0,
+        )
+        data = resp.json()
+        if resp.status_code == 200 and data.get("ok"):
+            bot_info = await client.get(f"{TELEGRAM_API}/getMe", timeout=10.0)
+            bot_name = bot_info.json().get("result", {}).get("username", "unknown")
+            return {
+                "ok": True,
+                "detail": f"Webhook установлен на {webhook_url}",
+                "bot": f"@{bot_name}",
+            }
+        return {"ok": False, "detail": data.get("description", str(data))}
+
+
+# === Рендеринг PDF-отчётов (существующий код) ===
 from fastapi.responses import Response
 class ReportRequest(BaseModel):
     test: dict
