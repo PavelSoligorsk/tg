@@ -14,6 +14,7 @@ from PIL import Image, ImageChops
 
 from app.config import BOT_TOKEN, TELEGRAM_API, CHROMIUM_PATH
 from app.routers.payments import router as payments_router
+from app.bot import create_bot_and_dispatcher
 
 app = FastAPI(title="KaTeX Premium Render Bot API")
 
@@ -452,115 +453,49 @@ async def send_math(msg: MathMessage):
 
 
 # ═══════════════════════════════════════════════════════════════
-# Telegram Bot Webhook — приём платежей и команд
+# Aiogram Telegram Bot Webhook
 # ═══════════════════════════════════════════════════════════════
 
 import logging
-import re
-from app.bot import (
-    handle_parent_receipt,
-    handle_teacher_confirm,
-    handle_teacher_reject,
-    handle_teacher_status,
-)
 
 logger = logging.getLogger("tg_bot.webhook")
 
 
+@app.on_event("startup")
+async def init_aiogram_bot():
+    """Инициализируем aiogram бота при старте FastAPI."""
+    import app.bot as bot_module
+    b, d = create_bot_and_dispatcher()
+    bot_module.bot = b
+    bot_module.dp = d
+
+    # Получаем информацию о боте
+    bot_info = await b.get_me()
+    logger.info(f"aiogram bot @{bot_info.username} initialized")
+
+
+@app.on_event("shutdown")
+async def shutdown_aiogram_bot():
+    """Закрываем сессию бота."""
+    import app.bot as bot_module
+    if bot_module.bot:
+        from aiogram.types import InputFile
+        await bot_module.bot.session.close()
+        logger.info("aiogram bot session closed")
+
+
 @app.post("/webhook")
 async def telegram_webhook(update: dict):
-    """Принимает обновления от Telegram (через setWebhook).
+    """Принимает обновления от Telegram, передаёт в aiogram Dispatcher."""
+    import app.bot as bot_module
+    if bot_module.dp is None:
+        return {"ok": False, "detail": "Бот ещё не инициализирован"}
 
-    Маршрутизирует:
-    - Фото → родитель отправил чек → handle_parent_receipt
-    - Команда /confirm → учитель подтверждает → handle_teacher_confirm
-    - Команда /reject  → учитель отклоняет → handle_teacher_reject
-    - Команда /status  → учитель смотрит статус → handle_teacher_status
-    """
+    from aiogram.types import Update as AiogramUpdate
     try:
-        # Telegram шлёт update в поле "message" или "edited_message"
-        message = update.get("message") or update.get("edited_message") or {}
-        if not message:
-            return {"ok": True, "detail": "no message"}
-
-        chat = message.get("chat", {})
-        chat_id = chat.get("id", 0)
-        from_user = message.get("from", {})
-        from_user_id = from_user.get("id", 0)
-
-        # --- Фото (родитель отправил чек) ---
-        if message.get("photo"):
-            msg_id = message.get("message_id", 0)
-            result = await handle_parent_receipt(chat_id, msg_id, from_user_id)
-            return {"ok": True, "action": "parent_receipt", **result}
-
-        # --- Текстовая команда ---
-        text = message.get("text", "")
-        if not text:
-            return {"ok": True, "detail": "no text"}
-
-        # Команды обрабатываем только если это ответ на пересланное фото
-        reply_to = message.get("reply_to_message", {})
-        receipt_msg_id = reply_to.get("message_id", 0) if reply_to else 0
-
-        # /confirm 120.50 @student_username [комментарий]
-        if text.startswith("/confirm"):
-            # Парсим: /confirm <сумма> <tg_id_ученика> [комментарий...]
-            parts = text.split(None, 3)  # ['/confirm', '120.50', '@student', 'комментарий']
-            if len(parts) < 3:
-                async with httpx.AsyncClient() as client:
-                    await client.post(
-                        f"{TELEGRAM_API}/sendMessage",
-                        json={
-                            "chat_id": chat_id,
-                            "text": "❌ Используйте: `/confirm <сумма> <@username_ученика> [комментарий]`",
-                            "parse_mode": "Markdown",
-                        },
-                        timeout=10.0,
-                    )
-                return {"ok": False, "detail": "bad format: /confirm <amount> <tg_student_id>"}
-
-            try:
-                amount = float(parts[1])
-            except ValueError:
-                amount = 0.0
-
-            tg_student_id = parts[2].lstrip("@")
-            comment = parts[3] if len(parts) > 3 else ""
-
-            result = await handle_teacher_confirm(
-                teacher_chat_id=chat_id,
-                teacher_user_id=from_user_id,
-                receipt_message_id=receipt_msg_id,
-                amount=amount,
-                tg_student_id=tg_student_id,
-                comment=comment,
-            )
-            return {"ok": True, "action": "confirm", **result}
-
-        # /reject [причина]
-        elif text.startswith("/reject"):
-            parts = text.split(None, 1)
-            comment = parts[1] if len(parts) > 1 else ""
-            result = await handle_teacher_reject(
-                teacher_chat_id=chat_id,
-                teacher_user_id=from_user_id,
-                receipt_message_id=receipt_msg_id,
-                comment=comment,
-            )
-            return {"ok": True, "action": "reject", **result}
-
-        # /status
-        elif text.startswith("/status"):
-            result = await handle_teacher_status(
-                teacher_chat_id=chat_id,
-                teacher_user_id=from_user_id,
-                receipt_message_id=receipt_msg_id,
-            )
-            return {"ok": True, "action": "status", **result}
-
-        return {"ok": True, "detail": "unknown command"}
-
+        aiogram_update = AiogramUpdate(**update)
+        await bot_module.dp.feed_webhook_update(bot_module.bot, aiogram_update)
+        return {"ok": True}
     except Exception as e:
         logger.exception("Webhook error")
         return {"ok": False, "detail": str(e)}

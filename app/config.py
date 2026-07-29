@@ -10,6 +10,9 @@ if not BOT_TOKEN:
 
 TELEGRAM_API: str = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
+# --- ID чата учителя (куда пересылаются чеки) ---
+TEACHER_CHAT_ID: int = int(os.getenv("TEACHER_CHAT_ID", "0"))
+
 # --- Образовательная платформа ---
 EDUCATION_API_URL: str = os.getenv("EDUCATION_API_URL", "")
 # API-ключ для доступа к платформе (передаётся в заголовке X-Telegram-Bot-Key)
