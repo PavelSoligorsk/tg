@@ -13,3 +13,4 @@ uuid
 markdown
 aiogram
 aiohttp
+redis

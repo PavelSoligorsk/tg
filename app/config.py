@@ -23,3 +23,7 @@ CHROMIUM_PATH: str | None = os.getenv("CHROMIUM_PATH")
 
 # Database (заглушка — реальная БД подключается при необходимости)
 DATABASE_URL: str = os.getenv("DATABASE_URL", "")
+
+# --- Redis (для FSM-хранилища aiogram) ---
+# Если не задан — используется MemoryStorage (не для прода!)
+REDIS_URL: str = os.getenv("REDIS_URL", "")
