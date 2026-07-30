@@ -477,7 +477,7 @@ async def cb_teacher_confirm(callback: CallbackQuery, bot: Bot) -> None:
     # Вызываем платформу
     result = await api.confirm_payment(
         teacher_tg_username=f"@{teacher_username}",
-        student_tg_username=f"@{student_tg_username}",
+        student_tg_username=student_tg_username.lstrip("@"),
         amount=amount,
         payment_type="per_lesson",
         comment=f"Подтверждено учителем @{teacher_username} через бота",
@@ -604,7 +604,7 @@ async def _execute_reject(
     # Вызываем платформу
     await api.reject_payment(
         teacher_tg_username=f"@{teacher_username}",
-        student_tg_username=f"@{student_tg}",
+        student_tg_username=student_tg.lstrip("@"),
         comment=reason,
     )
 
@@ -651,7 +651,7 @@ async def _execute_reject_from_message(
 
     await api.reject_payment(
         teacher_tg_username=f"@{teacher_username}",
-        student_tg_username=f"@{student_tg}",
+        student_tg_username=student_tg.lstrip("@"),
         comment=reason,
     )
 
