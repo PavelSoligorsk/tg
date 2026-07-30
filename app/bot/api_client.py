@@ -111,6 +111,37 @@ class PlatformAPI:
         except httpx.RequestError as e:
             return {"error": str(e)}
 
+    async def register_chat(self, tg_username: str, chat_id: int) -> dict:
+        """POST /telegram/register-chat — сохранить chat_id учителя."""
+
+        url = f"{self.base_url}/telegram/register-chat"
+        payload = {"tg_username": tg_username, "chat_id": chat_id}
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(url, json=payload, headers=self.headers, timeout=10.0)
+                if resp.status_code == 200:
+                    return resp.json()
+                logger.error(f"register_chat error {resp.status_code}: {resp.text}")
+                return {"found": False, "error": f"HTTP {resp.status_code}"}
+        except httpx.RequestError as e:
+            logger.error(f"register_chat network error: {e}")
+            return {"found": False, "error": str(e)}
+
+    async def get_teacher_chat(self, student_id: int) -> dict:
+        """GET /telegram/student/{student_id}/teacher-chat — chat_id учителя ученика."""
+
+        url = f"{self.base_url}/telegram/student/{student_id}/teacher-chat"
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(url, headers=self.headers, timeout=10.0)
+                if resp.status_code == 200:
+                    return resp.json()
+                logger.error(f"get_teacher_chat error {resp.status_code}: {resp.text}")
+                return {"found": False, "error": f"HTTP {resp.status_code}"}
+        except httpx.RequestError as e:
+            logger.error(f"get_teacher_chat network error: {e}")
+            return {"found": False, "error": str(e)}
+
 
 # Глобальный экземпляр
 api = PlatformAPI()

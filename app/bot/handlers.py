@@ -17,7 +17,6 @@ from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup
 from aiogram.fsm.context import FSMContext
 from aiogram.filters import Command
 
-from app.config import TEACHER_CHAT_ID
 from app.bot.api_client import api, PlatformAPI
 from app.bot.states import PaymentFlow, RejectReason, SelectStudent
 from app.bot.keyboards import (
@@ -294,21 +293,28 @@ async def cb_pay_confirm(callback: CallbackQuery, state: FSMContext, bot: Bot) -
 
     await callback.answer("Отправляем...")
 
-    if not TEACHER_CHAT_ID:
-        await callback.message.answer("❌ TEACHER_CHAT_ID не настроен.")
-        await state.clear()
-        return
-
     # Генерируем ID платежа
     payment_id = str(uuid.uuid4())[:8]
 
     # Получаем tg_username ученика (не DB id!)
     student_tg_username = data.get("student_tg_username", str(student_id))
 
+    # Ищем chat_id учителя ученика через платформу
+    teacher_chat_data = await api.get_teacher_chat(student_id)
+    if not teacher_chat_data.get("found") or not teacher_chat_data.get("chat_id"):
+        await callback.message.answer(
+            "❌ Учитель ещё не активировал бота.\n\n"
+            "Пожалуйста, попросите вашего преподавателя написать /start этому боту."
+        )
+        await state.clear()
+        return
+
+    teacher_chat_id = teacher_chat_data["chat_id"]
+
     # Пересылаем фото учителю
     try:
         sent = await bot.send_photo(
-            chat_id=TEACHER_CHAT_ID,
+            chat_id=teacher_chat_id,
             photo=photo_file_id,
             caption=(
                 f"📎 *Новый чек на проверку*\n\n"
@@ -432,8 +438,18 @@ async def cb_stats(callback: CallbackQuery) -> None:
 
 
 async def _handle_teacher_start(message: Message, result: dict, name: str) -> None:
-    """Приветствие учителя."""
+    """Приветствие учителя. Сохраняем tg_chat_id на бэкенде."""
     students_count = result.get("students_count", 0)
+    tg_username = result.get("tg_username", message.from_user.username or "")
+
+    # Сохраняем chat_id учителя на платформе для маршрутизации чеков
+    if tg_username:
+        reg_result = await api.register_chat(tg_username, message.chat.id)
+        if reg_result.get("found"):
+            logger.info(f"Chat registered for teacher @{tg_username}: chat_id={message.chat.id}")
+        else:
+            logger.warning(f"Failed to register chat for teacher @{tg_username}: {reg_result}")
+
     await message.answer(
         f"👋 Здравствуйте, {name}!\n\n"
         f"У вас {students_count} учеников.\n\n"
