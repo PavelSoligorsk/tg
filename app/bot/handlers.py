@@ -23,19 +23,19 @@ from app.bot.keyboards import (
     parent_menu_keyboard,
     children_selection_keyboard,
     payment_confirm_keyboard,
-    teacher_payment_keyboard,
     reject_reason_keyboard,
     back_to_main_keyboard,
+    teacher_menu_keyboard,
+    teacher_queue_list_keyboard,
+    teacher_review_keyboard,
+    stats_nav_keyboard,
     REJECT_REASONS,
 )
+from app.bot import redis_queue
 
 logger = logging.getLogger(__name__)
 
 router = Router()
-
-# ── Временное хранилище платёжных запросов (pending перед подтверждением) ──
-# {payment_id: {student_tg, amount, parent_msg_id, parent_chat_id}}
-_pending_payments: dict[str, dict] = {}
 
 # ── Форматирование ──
 
@@ -137,8 +137,9 @@ async def _show_parent_menu(message: Message, child: dict) -> None:
         f"👨‍🏫 Учитель: {teacher}\n\n"
         f"Выберите действие:"
     )
-    await message.answer(
-        text, reply_markup=parent_menu_keyboard(student_id), parse_mode="Markdown"
+    await _try_edit_or_answer(
+        message, text, parse_mode="Markdown",
+        reply_markup=parent_menu_keyboard(student_id),
     )
 
 
@@ -299,53 +300,35 @@ async def cb_pay_confirm(callback: CallbackQuery, state: FSMContext, bot: Bot) -
     # Получаем tg_username ученика (не DB id!)
     student_tg_username = data.get("student_tg_username", str(student_id))
 
-    # Ищем chat_id учителя ученика через платформу
+    # Находим учителя через платформу
     teacher_chat_data = await api.get_teacher_chat(student_id)
-    if not teacher_chat_data.get("found") or not teacher_chat_data.get("chat_id"):
+    teacher_tg = teacher_chat_data.get("teacher_tg_username", "")
+
+    if not teacher_tg:
         await callback.message.answer(
-            "❌ Учитель ещё не активировал бота.\n\n"
-            "Пожалуйста, попросите вашего преподавателя написать /start этому боту."
+            "❌ У этого ученика нет привязанного учителя.\n\n"
+            "Пожалуйста, обратитесь к администратору."
         )
         await state.clear()
         return
 
-    teacher_chat_id = teacher_chat_data["chat_id"]
-
-    # Пересылаем фото учителю
+    # Сохраняем платёж в Redis-очередь учителя
     try:
-        sent = await bot.send_photo(
-            chat_id=teacher_chat_id,
-            photo=photo_file_id,
-            caption=(
-                f"📎 *Новый чек на проверку*\n\n"
-                f"ID: `{payment_id}`\n"
-                f"Сумма: *{amount_byn:.2f} BYN*\n"
-                f"Родитель: @{callback.from_user.username}\n"
-            ),
-            parse_mode="Markdown",
-            reply_markup=teacher_payment_keyboard(
-                payment_id=payment_id,
-                student_tg_username=student_tg_username,
-                amount=amount_kop,
-            ),
+        await redis_queue.push_payment(
+            payment_id=payment_id,
+            teacher_tg_username=teacher_tg,
+            student_tg_username=student_tg_username,
+            amount=amount_kop,
+            parent_chat_id=callback.message.chat.id,
+            photo_file_id=photo_file_id,
         )
-        teacher_msg_id = sent.message_id
     except Exception as e:
-        logger.error(f"Ошибка пересылки чека учителю: {e}")
-        await callback.message.answer("❌ Не удалось отправить чек. Попробуйте позже.")
+        logger.error(f"Ошибка сохранения платежа в Redis: {e}")
+        await callback.message.answer(
+            "❌ Не удалось сохранить платёж. Попробуйте позже."
+        )
         await state.clear()
         return
-
-    # Сохраняем платёж
-    _pending_payments[payment_id] = {
-        "student_tg_username": student_tg_username,
-        "amount": amount_kop,
-        "parent_chat_id": callback.message.chat.id,
-        "parent_msg_id": callback.message.message_id,
-        "photo_file_id": photo_file_id,
-        "teacher_msg_id": teacher_msg_id,
-        "payment_id": payment_id,
-    }
 
     await callback.message.edit_text(
         f"✅ Чек отправлен на проверку!\n\n"
@@ -409,7 +392,8 @@ async def cb_balance(callback: CallbackQuery) -> None:
     else:
         lines.append("Операций пока нет.")
 
-    await callback.message.answer(
+    await _try_edit_or_answer(
+        callback.message,
         "\n".join(lines),
         parse_mode="Markdown",
         reply_markup=back_to_main_keyboard(student_id),
@@ -419,17 +403,80 @@ async def cb_balance(callback: CallbackQuery) -> None:
 # ── Статистика ──
 
 
+def _format_payment_op(op: dict) -> str:
+    """Форматирует одну операцию для вывода."""
+    sign = "🟢" if op["type"] == "deposit" else "🔴"
+    op_type = "Пополнение" if op["type"] == "deposit" else "Списание"
+    comment = f" — {op['comment']}" if op.get("comment") else ""
+    dt_str = ""
+    if op.get("created_at"):
+        try:
+            from datetime import datetime as dt
+            d = dt.fromisoformat(str(op["created_at"]).replace("Z", "+00:00"))
+            dt_str = d.strftime(" %d.%m")
+        except Exception:
+            pass
+    return f"{sign} {op_type}: {_cents_to_byn(op['amount'])}{dt_str}{comment}"
+
+
 @router.callback_query(F.data.startswith("stats:"))
 async def cb_stats(callback: CallbackQuery) -> None:
-    """Заглушка статистики."""
-    student_id = int(callback.data.split(":")[1])
+    """Статистика оплат ученика (сводка + пагинация)."""
+    parts = callback.data.split(":")
+    student_id = int(parts[1])
+    page = int(parts[2]) if len(parts) > 2 else 1
     await callback.answer()
 
-    await callback.message.answer(
-        "📊 *Статистика*\n\nСкоро появится! 🚀\n",
+    data = await api.get_payment_stats(student_id, page=page, page_size=5)
+    if "error" in data:
+        await callback.answer(f"Ошибка: {data['error']}", show_alert=True)
+        return
+
+    student_name = data.get("student_name", f"Ученик {student_id}")
+    balance = data.get("balance", 0)
+    total_dep = data.get("total_deposited", 0)
+    total_spent = data.get("total_spent", 0)
+    payments = data.get("payments", [])
+
+    lines = [
+        f"📊 *Статистика — {student_name}*",
+        "",
+        f"💰 Текущий баланс: *{_cents_to_byn(balance)}*",
+        f"🟢 Всего пополнено: *{_cents_to_byn(total_dep)}*",
+        f"🔴 Всего списано: *{_cents_to_byn(total_spent)}*",
+        "",
+    ]
+
+    if payments:
+        lines.append(f"*Операции (стр. {data['page']}/{data['total_pages']}):*")
+        for op in payments:
+            lines.append(_format_payment_op(op))
+    else:
+        lines.append("Операций пока нет.")
+
+    await _try_edit_or_answer(
+        callback.message,
+        "\n".join(lines),
         parse_mode="Markdown",
-        reply_markup=back_to_main_keyboard(student_id),
+        reply_markup=stats_nav_keyboard(
+            student_id=student_id,
+            page=data["page"],
+            has_next=data["has_next"],
+            has_prev=data["has_prev"],
+        ),
     )
+
+
+@router.callback_query(F.data.startswith("stats_page:"))
+async def cb_stats_page(callback: CallbackQuery) -> None:
+    """Навигация по страницам статистики."""
+    # stats_page:student_id:new_page
+    parts = callback.data.split(":")
+    student_id = int(parts[1])
+    page = int(parts[2])
+    # Перенаправляем в cb_stats с новой страницей
+    callback.data = f"stats:{student_id}:{page}"
+    await cb_stats(callback)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -438,11 +485,11 @@ async def cb_stats(callback: CallbackQuery) -> None:
 
 
 async def _handle_teacher_start(message: Message, result: dict, name: str) -> None:
-    """Приветствие учителя. Сохраняем tg_chat_id на бэкенде."""
+    """Приветствие учителя. Сохраняем tg_chat_id на бэкенде и показываем меню."""
     students_count = result.get("students_count", 0)
     tg_username = result.get("tg_username", message.from_user.username or "")
 
-    # Сохраняем chat_id учителя на платформе для маршрутизации чеков
+    # Сохраняем chat_id учителя на платформе
     if tg_username:
         reg_result = await api.register_chat(tg_username, message.chat.id)
         if reg_result.get("found"):
@@ -450,12 +497,112 @@ async def _handle_teacher_start(message: Message, result: dict, name: str) -> No
         else:
             logger.warning(f"Failed to register chat for teacher @{tg_username}: {reg_result}")
 
+    # Считаем непроверенные оплаты
+    queue_count = 0
+    try:
+        queue_count = await redis_queue.get_teacher_queue_count(tg_username)
+    except Exception as e:
+        logger.warning(f"Не удалось получить очередь из Redis: {e}")
+
     await message.answer(
         f"👋 Здравствуйте, {name}!\n\n"
-        f"У вас {students_count} учеников.\n\n"
-        f"Когда родитель пришлёт чек, вы получите уведомление "
-        f"с кнопками ✅ Подтвердить и ❌ Отклонить."
+        f"У вас {students_count} учеников.",
+        reply_markup=teacher_menu_keyboard(queue_count),
     )
+
+
+# ── Учитель: просмотр очереди ──
+
+
+@router.callback_query(F.data == "teacher_queue")
+async def cb_teacher_queue(callback: CallbackQuery) -> None:
+    """Учитель открыл список непроверенных оплат."""
+    tg_username = callback.from_user.username or ""
+    if not tg_username:
+        await callback.answer("Не задан @username", show_alert=True)
+        return
+    await callback.answer()
+
+    try:
+        payments = await redis_queue.get_teacher_queue(tg_username)
+    except Exception as e:
+        logger.error(f"Ошибка чтения очереди: {e}")
+        await _try_edit_or_answer(
+            callback.message,
+            "❌ Не удалось загрузить очередь оплат. Попробуйте позже.",
+            reply_markup=teacher_menu_keyboard(0),
+        )
+        return
+
+    if not payments:
+        await _try_edit_or_answer(
+            callback.message,
+            "📋 *Непроверенных оплат нет.*\n\nНовых чеков пока не поступало.",
+            parse_mode="Markdown",
+            reply_markup=teacher_menu_keyboard(0),
+        )
+        return
+
+    await _try_edit_or_answer(
+        callback.message,
+        f"📋 *Непроверенные оплаты* ({len(payments)}):\n\nВыберите платёж для проверки:",
+        parse_mode="Markdown",
+        reply_markup=teacher_queue_list_keyboard(payments),
+    )
+
+
+@router.callback_query(F.data == "teacher_queue_refresh")
+async def cb_teacher_queue_refresh(callback: CallbackQuery) -> None:
+    """Обновить список очереди."""
+    await cb_teacher_queue(callback)
+
+
+# ── Учитель: просмотр одного платежа ──
+
+
+@router.callback_query(F.data.startswith("teacher_view:"))
+async def cb_teacher_view(callback: CallbackQuery, bot: Bot) -> None:
+    """Учитель выбрал конкретный платёж — показываем фото и кнопки."""
+    payment_id = callback.data.split(":")[1]
+    await callback.answer()
+
+    try:
+        payment = await redis_queue.get_payment(payment_id)
+    except Exception as e:
+        logger.error(f"Ошибка чтения платежа {payment_id}: {e}")
+        await callback.answer("Ошибка загрузки платежа", show_alert=True)
+        return
+
+    if not payment:
+        await callback.answer("Платёж уже обработан или не найден", show_alert=True)
+        return
+
+    student_tg = payment.get("student_tg_username", "—")
+    amount = int(payment.get("amount", 0))
+    photo_id = payment.get("photo_file_id", "")
+    amount_byn = amount / 100.0
+
+    caption = (
+        f"📎 *Чек на проверку*\n\n"
+        f"ID: `{payment_id}`\n"
+        f"Сумма: *{amount_byn:.2f} BYN*\n"
+        f"Ученик: @{student_tg}\n\n"
+        f"Выберите действие:"
+    )
+
+    try:
+        sent = await bot.send_photo(
+            chat_id=callback.message.chat.id,
+            photo=photo_id,
+            caption=caption,
+            parse_mode="Markdown",
+            reply_markup=teacher_review_keyboard(payment_id),
+        )
+        # Сохраняем ID сообщения с фото для последующего edit_caption
+        payment["teacher_msg_id"] = sent.message_id
+    except Exception as e:
+        logger.error(f"Не удалось отправить фото чека: {e}")
+        await callback.answer("Не удалось загрузить фото чека", show_alert=True)
 
 
 # ── Учитель: подтверждение оплаты ──
@@ -464,15 +611,25 @@ async def _handle_teacher_start(message: Message, result: dict, name: str) -> No
 @router.callback_query(F.data.startswith("t_confirm:"))
 async def cb_teacher_confirm(callback: CallbackQuery, bot: Bot) -> None:
     """Учитель нажал ✅ Подтвердить."""
-    parts = callback.data.split(":")
-    payment_id = parts[1]
-    student_tg_username = parts[2]
-    amount = int(parts[3])
+    payment_id = callback.data.split(":")[1]
 
-    payment_info = _pending_payments.get(payment_id)
+    # Загружаем платёж из Redis
+    try:
+        payment = await redis_queue.get_payment(payment_id)
+    except Exception as e:
+        logger.error(f"Ошибка чтения платежа {payment_id}: {e}")
+        await callback.answer("Ошибка загрузки платежа", show_alert=True)
+        return
 
-    # Получаем username учителя
+    if not payment:
+        await callback.answer("Платёж уже обработан", show_alert=True)
+        return
+
+    student_tg_username = payment.get("student_tg_username", "")
+    amount = int(payment.get("amount", 0))
+    teacher_tg = payment.get("teacher_tg_username", callback.from_user.username or "")
     teacher_username = callback.from_user.username or str(callback.from_user.id)
+    parent_chat_id = int(payment.get("parent_chat_id", 0))
 
     # Вызываем платформу
     result = await api.confirm_payment(
@@ -489,40 +646,47 @@ async def cb_teacher_confirm(callback: CallbackQuery, bot: Bot) -> None:
 
     await callback.answer("✅ Подтверждено!")
 
-    # Обновляем сообщение учителю
-    new_text = (
+    # Обновляем сообщение с фото
+    new_caption = (
         f"✅ *Платёж подтверждён!*\n\n"
         f"ID: `{payment_id}`\n"
         f"Сумма: *{_cents_to_byn(amount)}*\n"
         f"Ученик: `{student_tg_username}`\n"
         f"Кто подтвердил: @{teacher_username}"
     )
-    await callback.message.edit_caption(
-        caption=new_text,
-        parse_mode="Markdown",
-        reply_markup=None,
-    )
+    try:
+        await callback.message.edit_caption(
+            caption=new_caption,
+            parse_mode="Markdown",
+            reply_markup=None,
+        )
+    except Exception:
+        pass
 
     # Уведомляем родителя
-    if payment_info:
-        parent_chat_id = payment_info.get("parent_chat_id")
-        if parent_chat_id:
-            try:
-                await bot.send_message(
-                    chat_id=parent_chat_id,
-                    text=(
-                        f"✅ *Оплата подтверждена!*\n\n"
-                        f"ID: `{payment_id}`\n"
-                        f"Сумма: *{_cents_to_byn(amount)}*\n"
-                        f"Баланс пополнен."
-                    ),
-                    parse_mode="Markdown",
-                )
-            except Exception as e:
-                logger.warning(f"Не удалось уведомить родителя: {e}")
+    if parent_chat_id:
+        try:
+            await bot.send_message(
+                chat_id=parent_chat_id,
+                text=(
+                    f"✅ *Оплата подтверждена!*\n\n"
+                    f"ID: `{payment_id}`\n"
+                    f"Сумма: *{_cents_to_byn(amount)}*\n"
+                    f"Баланс пополнен."
+                ),
+                parse_mode="Markdown",
+            )
+        except Exception as e:
+            logger.warning(f"Не удалось уведомить родителя: {e}")
 
-    # Убираем из pending
-    _pending_payments.pop(payment_id, None)
+    # Убираем из Redis
+    try:
+        await redis_queue.remove_payment(payment_id, teacher_tg)
+    except Exception as e:
+        logger.error(f"Ошибка удаления платежа из Redis: {e}")
+
+    # Возвращаемся к очереди
+    await cb_teacher_queue(callback)
 
 
 # ── Учитель: отклонение оплаты ──
@@ -531,16 +695,14 @@ async def cb_teacher_confirm(callback: CallbackQuery, bot: Bot) -> None:
 @router.callback_query(F.data.startswith("t_reject:"))
 async def cb_teacher_reject_start(callback: CallbackQuery, state: FSMContext) -> None:
     """Учитель нажал ❌ Отклонить — показываем причины."""
-    parts = callback.data.split(":")
-    payment_id = parts[1]
-    student_tg = parts[2]
+    payment_id = callback.data.split(":")[1]
 
-    await state.update_data(reject_payment_id=payment_id, reject_student_tg=student_tg)
+    await state.update_data(reject_payment_id=payment_id)
 
     await callback.answer()
     await callback.message.answer(
         "Выберите причину отклонения:",
-        reply_markup=reject_reason_keyboard(payment_id, student_tg),
+        reply_markup=reject_reason_keyboard(payment_id),
     )
 
 
@@ -549,8 +711,7 @@ async def cb_teacher_reject_reason(callback: CallbackQuery, state: FSMContext, b
     """Учитель выбрал причину отклонения."""
     parts = callback.data.split(":")
     payment_id = parts[1]
-    student_tg = parts[2]
-    reason_idx = int(parts[3])
+    reason_idx = int(parts[2])
     reason = REJECT_REASONS[reason_idx]
 
     if reason == "Другое":
@@ -561,7 +722,7 @@ async def cb_teacher_reject_reason(callback: CallbackQuery, state: FSMContext, b
         )
         return
 
-    await _execute_reject(callback, payment_id, student_tg, reason, state, bot)
+    await _execute_reject(callback, payment_id, reason, state, bot)
 
 
 @router.message(RejectReason.waiting_for_custom_reason)
@@ -569,13 +730,9 @@ async def teacher_custom_reject_reason(message: Message, state: FSMContext, bot:
     """Учитель ввёл свою причину отклонения."""
     data = await state.get_data()
     payment_id = data.get("reject_payment_id", "")
-    student_tg = data.get("reject_student_tg", "")
-    reason = message.text.strip()
+    reason = message.text.strip() or "Без причины"
 
-    if not reason:
-        reason = "Без причины"
-
-    await _execute_reject_from_message(message, payment_id, student_tg, reason, state, bot)
+    await _execute_reject_from_message(message, payment_id, reason, state, bot)
 
 
 @router.callback_query(F.data.startswith("t_reject_cancel:"))
@@ -592,62 +749,54 @@ async def cb_teacher_reject_cancel(callback: CallbackQuery, state: FSMContext) -
 async def _execute_reject(
     callback: CallbackQuery,
     payment_id: str,
-    student_tg: str,
     reason: str,
     state: FSMContext,
     bot: Bot,
 ) -> None:
-    """Общая логика отклонения."""
-    payment_info = _pending_payments.get(payment_id)
-    teacher_username = callback.from_user.username or str(callback.from_user.id)
-
-    # Вызываем платформу
-    await api.reject_payment(
-        teacher_tg_username=f"@{teacher_username}",
-        student_tg_username=student_tg.lstrip("@"),
-        comment=reason,
-    )
-
+    """Общая логика отклонения (из callback)."""
+    await _do_reject(callback.from_user.username or str(callback.from_user.id), 
+                     payment_id, reason, state, bot)
+    
     await callback.answer("Отклонено")
-
-    # Обновляем сообщение учителю
     try:
         await callback.message.delete()
     except Exception:
         pass
-
-    # Уведомляем родителя
-    if payment_info:
-        parent_chat_id = payment_info.get("parent_chat_id")
-        if parent_chat_id:
-            try:
-                await bot.send_message(
-                    chat_id=parent_chat_id,
-                    text=(
-                        f"❌ *Оплата отклонена*\n\n"
-                        f"ID: `{payment_id}`\n"
-                        f"Причина: {reason}"
-                    ),
-                    parse_mode="Markdown",
-                )
-            except Exception as e:
-                logger.warning(f"Не удалось уведомить родителя: {e}")
-
-    _pending_payments.pop(payment_id, None)
-    await state.clear()
+    
+    # Возвращаемся к очереди
+    await cb_teacher_queue(callback)
 
 
 async def _execute_reject_from_message(
     message: Message,
     payment_id: str,
-    student_tg: str,
     reason: str,
     state: FSMContext,
     bot: Bot,
 ) -> None:
     """Отклонение из текстового сообщения."""
-    payment_info = _pending_payments.get(payment_id)
-    teacher_username = message.from_user.username or str(message.from_user.id)
+    await _do_reject(message.from_user.username or str(message.from_user.id),
+                     payment_id, reason, state, bot)
+
+    await message.answer(f"❌ Платёж `{payment_id}` отклонён. Причина: {reason}", parse_mode="Markdown")
+
+
+async def _do_reject(
+    teacher_username: str,
+    payment_id: str,
+    reason: str,
+    state: FSMContext,
+    bot: Bot,
+) -> None:
+    """Выполнить отклонение: API + Redis + уведомление родителю."""
+    try:
+        payment = await redis_queue.get_payment(payment_id)
+    except Exception:
+        payment = None
+
+    student_tg = payment.get("student_tg_username", "") if payment else ""
+    teacher_tg = payment.get("teacher_tg_username", teacher_username) if payment else teacher_username
+    parent_chat_id = int(payment.get("parent_chat_id", 0)) if payment else 0
 
     await api.reject_payment(
         teacher_tg_username=f"@{teacher_username}",
@@ -655,21 +804,27 @@ async def _execute_reject_from_message(
         comment=reason,
     )
 
-    await message.answer(f"❌ Платёж `{payment_id}` отклонён. Причина: {reason}", parse_mode="Markdown")
+    # Уведомляем родителя
+    if parent_chat_id:
+        try:
+            await bot.send_message(
+                chat_id=parent_chat_id,
+                text=(
+                    f"❌ *Оплата отклонена*\n\n"
+                    f"ID: `{payment_id}`\n"
+                    f"Причина: {reason}"
+                ),
+                parse_mode="Markdown",
+            )
+        except Exception as e:
+            logger.warning(f"Не удалось уведомить родителя: {e}")
 
-    if payment_info:
-        parent_chat_id = payment_info.get("parent_chat_id")
-        if parent_chat_id:
-            try:
-                await bot.send_message(
-                    chat_id=parent_chat_id,
-                    text=f"❌ *Оплата отклонена*\n\nID: `{payment_id}`\nПричина: {reason}",
-                    parse_mode="Markdown",
-                )
-            except Exception as e:
-                logger.warning(f"Не удалось уведомить родителя: {e}")
+    # Убираем из Redis
+    try:
+        await redis_queue.remove_payment(payment_id, teacher_tg)
+    except Exception as e:
+        logger.error(f"Ошибка удаления платежа из Redis: {e}")
 
-    _pending_payments.pop(payment_id, None)
     await state.clear()
 
 
@@ -690,6 +845,19 @@ async def _handle_student_start(message: Message, result: dict, name: str) -> No
 # ═══════════════════════════════════════════════════════════════
 # Хелперы
 # ═══════════════════════════════════════════════════════════════
+
+
+async def _try_edit_or_answer(
+    message: Message, text: str, *, parse_mode: str = None, reply_markup=None
+) -> None:
+    """Пробует отредактировать сообщение; если не выходит — шлёт новое.
+
+    Используется для кнопок «Назад» и навигации, чтобы не плодить окна.
+    """
+    try:
+        await message.edit_text(text, parse_mode=parse_mode, reply_markup=reply_markup)
+    except Exception:
+        await message.answer(text, parse_mode=parse_mode, reply_markup=reply_markup)
 
 
 async def _navigate_back_to_menu(callback_or_msg: CallbackQuery, student_id: int) -> None:

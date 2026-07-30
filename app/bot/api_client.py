@@ -56,6 +56,28 @@ class PlatformAPI:
             logger.error(f"balance network error: {e}")
             return {"error": str(e)}
 
+    async def get_payment_stats(
+        self, student_id: int, page: int = 1, page_size: int = 5
+    ) -> dict:
+        """GET /telegram/student/{student_id}/payment-stats?page=N&page_size=N"""
+
+        url = f"{self.base_url}/telegram/student/{student_id}/payment-stats"
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(
+                    url,
+                    headers=self.headers,
+                    params={"page": page, "page_size": page_size},
+                    timeout=15.0,
+                )
+                if resp.status_code == 200:
+                    return resp.json()
+                logger.error(f"payment-stats error {resp.status_code}: {resp.text}")
+                return {"error": f"HTTP {resp.status_code}"}
+        except httpx.RequestError as e:
+            logger.error(f"payment-stats network error: {e}")
+            return {"error": str(e)}
+
     async def confirm_payment(
         self,
         teacher_tg_username: str,
