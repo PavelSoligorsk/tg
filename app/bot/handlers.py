@@ -30,6 +30,8 @@ from app.bot.keyboards import (
     teacher_queue_list_keyboard,
     teacher_review_keyboard,
     stats_nav_keyboard,
+    student_menu_keyboard,
+    schedule_period_keyboard,
     REJECT_REASONS,
 )
 from app.bot import redis_queue
@@ -53,10 +55,178 @@ async def cb_forgot_password(callback: CallbackQuery) -> None:
 
     await callback.answer()
     result = await api.forgot_password(tg_username)
-    await callback.message.answer(
+    await callback.message.edit_text(
         f"🔑 *Сброс пароля*\n\n{result.get('message', 'Ошибка')}",
         parse_mode="Markdown",
     )
+
+
+# ═══════════════════════════════════════════════════════════════
+# Расписание (учитель + ученик)
+# ═══════════════════════════════════════════════════════════════
+
+
+@router.callback_query(F.data.startswith("schedule:"))
+async def cb_schedule(callback: CallbackQuery) -> None:
+    """Показать расписание (неделя или месяц)."""
+    period = callback.data.split(":")[1]
+    tg_username = callback.from_user.username or ""
+    if not tg_username:
+        await callback.answer("Не задан @username", show_alert=True)
+        return
+
+    await callback.answer("Загружаю расписание...")
+    data = await api.get_schedule(tg_username, period)
+
+    if not data.get("ok"):
+        await callback.message.edit_text(
+            f"❌ {data.get('message', 'Ошибка загрузки')}",
+            parse_mode="Markdown",
+            reply_markup=schedule_period_keyboard(),
+        )
+        return
+
+    lessons = data.get("lessons", [])
+    period_label = "неделю" if period == "week" else "месяц"
+
+    if not lessons:
+        text = f"📅 *Расписание на {period_label}*\n\nЗанятий нет."
+    else:
+        lines = [f"📅 *Расписание на {period_label}*\n"]
+        for l in lessons:
+            lines.append(
+                f"{l['status_emoji']} *{l['date']}* {l['time']} — {l['title']}"
+            )
+        text = "\n".join(lines)
+
+    await callback.message.edit_text(
+        text,
+        parse_mode="Markdown",
+        reply_markup=schedule_period_keyboard(),
+    )
+
+
+@router.callback_query(F.data == "back_to_schedule_menu")
+async def cb_back_to_schedule_menu(callback: CallbackQuery) -> None:
+    """Вернуться в главное меню из расписания."""
+    tg_username = callback.from_user.username or ""
+    whoami = await api.whoami(tg_username)
+    role = whoami.get("role", "")
+    if role == "teacher":
+        await _show_teacher_menu_edit(callback)
+    elif role == "student":
+        await _show_student_menu_edit(callback)
+    else:
+        await callback.answer("Неизвестная роль", show_alert=True)
+
+
+# ═══════════════════════════════════════════════════════════════
+# Домашние задания (ученик)
+# ═══════════════════════════════════════════════════════════════
+
+
+@router.callback_query(F.data == "my_assignments")
+async def cb_my_assignments(callback: CallbackQuery) -> None:
+    """Показать назначенные тесты."""
+    tg_username = callback.from_user.username or ""
+    await callback.answer("Загружаю задания...")
+    data = await api.get_my_assignments(tg_username)
+
+    if not data.get("ok"):
+        await callback.message.edit_text(
+            f"❌ {data.get('message', 'Ошибка')}",
+            parse_mode="Markdown",
+            reply_markup=student_menu_keyboard(),
+        )
+        return
+
+    assignments = data.get("assignments", [])
+    if not assignments:
+        text = "📝 *Мои задания*\n\nНет активных заданий."
+    else:
+        lines = ["📝 *Мои задания*\n"]
+        for a in assignments:
+            lines.append(
+                f"📌 *{a['title']}*\n"
+                f"   📅 Срок: {a['due_date']} {a.get('due', '')}"
+            )
+        text = "\n".join(lines)
+
+    await callback.message.edit_text(
+        text,
+        parse_mode="Markdown",
+        reply_markup=student_menu_keyboard(),
+    )
+
+
+# ═══════════════════════════════════════════════════════════════
+# Оплата от ученика
+# ═══════════════════════════════════════════════════════════════
+
+
+@router.callback_query(F.data == "student_pay")
+async def cb_student_pay_start(callback: CallbackQuery, state: FSMContext) -> None:
+    """Ученик нажал «Отправить оплату»."""
+    tg_username = callback.from_user.username or ""
+    whoami = await api.whoami(tg_username)
+    if whoami.get("role") != "student":
+        await callback.answer("Только для учеников", show_alert=True)
+        return
+
+    await callback.answer()
+    await state.update_data(student_id=whoami.get("id", 0), student_tg_username=tg_username)
+    await state.set_state(PaymentFlow.waiting_for_amount)
+
+    await callback.message.edit_text(
+        "💳 *Отправка оплаты*\n\n"
+        "Введите сумму в BYN (например: `120.50`):",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="Отмена", callback_data="pay_cancel_student")]
+            ]
+        ),
+    )
+
+
+@router.callback_query(F.data == "pay_cancel_student")
+async def cb_student_pay_cancel(callback: CallbackQuery, state: FSMContext) -> None:
+    """Отмена оплаты учеником."""
+    await state.clear()
+    await callback.answer("Отменено")
+    await _show_student_menu_edit(callback)
+
+
+# ── Хелперы для меню ──
+
+
+async def _show_student_menu_edit(callback: CallbackQuery) -> None:
+    """Показать меню ученика через edit_message."""
+    tg_username = callback.from_user.username or ""
+    whoami = await api.whoami(tg_username)
+    name = whoami.get("name", tg_username)
+    await callback.message.edit_text(
+        f"👋 Привет, {name}!\n\nВыберите действие:",
+        reply_markup=student_menu_keyboard(),
+    )
+
+
+async def _show_teacher_menu_edit(callback: CallbackQuery) -> None:
+    """Показать меню учителя через edit_message."""
+    tg_username = callback.from_user.username or ""
+    queue_count = 0
+    try:
+        queue_count = await redis_queue.get_teacher_queue_count(tg_username)
+    except Exception:
+        pass
+    whoami_data = await api.whoami(tg_username)
+    name = whoami_data.get("name", tg_username)
+    students_count = whoami_data.get("students_count", 0)
+    await callback.message.edit_text(
+        f"👋 Здравствуйте, {name}!\n\nУ вас {students_count} учеников.",
+        reply_markup=teacher_menu_keyboard(queue_count),
+    )
+
 
 # ── Форматирование ──
 
@@ -858,7 +1028,7 @@ async def _handle_student_start(message: Message, result: dict, name: str) -> No
     """Приветствие ученика. Сохраняем tg_chat_id и показываем меню."""
     tg_username = result.get("tg_username", message.from_user.username or "")
 
-    # Сохраняем chat_id ученика на платформе (для восстановления пароля)
+    # Сохраняем chat_id ученика на платформе (для уведомлений и восстановления пароля)
     if tg_username:
         reg_result = await api.register_chat(tg_username, message.chat.id)
         if reg_result.get("found"):
@@ -866,15 +1036,9 @@ async def _handle_student_start(message: Message, result: dict, name: str) -> No
         else:
             logger.warning(f"Failed to register chat for student @{tg_username}: {reg_result}")
 
-    builder = InlineKeyboardBuilder()
-    builder.row(
-        InlineKeyboardButton(text="🔑 Восстановить пароль", callback_data="forgot_password"),
-    )
     await message.answer(
-        f"👋 Привет, {name}!\n\n"
-        f"Функционал для учеников скоро появится! 🚀\n"
-        f"А пока пользуйтесь веб-версией платформы.",
-        reply_markup=builder.as_markup(),
+        f"👋 Привет, {name}!\n\nВыберите действие:",
+        reply_markup=student_menu_keyboard(),
     )
 
 

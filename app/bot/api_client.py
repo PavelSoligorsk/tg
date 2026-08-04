@@ -180,6 +180,46 @@ class PlatformAPI:
             logger.error(f"forgot_password network error: {e}")
             return {"ok": False, "message": "Не удалось связаться с сервером."}
 
+    async def get_schedule(self, tg_username: str, period: str = "week") -> dict:
+        """GET /telegram/schedule?tg_username=...&period=week|month"""
+
+        url = f"{self.base_url}/telegram/schedule"
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(
+                    url,
+                    headers=self.headers,
+                    params={"tg_username": tg_username.lstrip("@"), "period": period},
+                    timeout=15.0,
+                )
+                if resp.status_code == 200:
+                    return resp.json()
+                logger.error(f"schedule error {resp.status_code}: {resp.text}")
+                return {"ok": False, "message": f"Ошибка ({resp.status_code})"}
+        except httpx.RequestError as e:
+            logger.error(f"schedule network error: {e}")
+            return {"ok": False, "message": "Не удалось загрузить расписание."}
+
+    async def get_my_assignments(self, tg_username: str) -> dict:
+        """GET /telegram/my-assignments?tg_username=..."""
+
+        url = f"{self.base_url}/telegram/my-assignments"
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(
+                    url,
+                    headers=self.headers,
+                    params={"tg_username": tg_username.lstrip("@")},
+                    timeout=15.0,
+                )
+                if resp.status_code == 200:
+                    return resp.json()
+                logger.error(f"my-assignments error {resp.status_code}: {resp.text}")
+                return {"ok": False, "message": f"Ошибка ({resp.status_code})"}
+        except httpx.RequestError as e:
+            logger.error(f"my-assignments network error: {e}")
+            return {"ok": False, "message": "Не удалось загрузить задания."}
+
 
 # Глобальный экземпляр
 api = PlatformAPI()

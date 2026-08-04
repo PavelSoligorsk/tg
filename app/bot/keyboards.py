@@ -119,9 +119,12 @@ def back_to_main_keyboard(student_id: int) -> InlineKeyboardMarkup:
 
 
 def teacher_menu_keyboard(queue_count: int = 0) -> InlineKeyboardMarkup:
-    """Меню учителя с кнопкой очереди, счётчиком и восстановлением пароля."""
+    """Меню учителя с расписанием, очередью, восстановлением пароля."""
     builder = InlineKeyboardBuilder()
     badge = f" ({queue_count})" if queue_count > 0 else ""
+    builder.row(
+        InlineKeyboardButton(text="📅 Расписание", callback_data="schedule:week"),
+    )
     builder.row(
         InlineKeyboardButton(
             text=f"📋 Непроверенные оплаты{badge}",
@@ -180,6 +183,43 @@ def teacher_review_keyboard(payment_id: str) -> InlineKeyboardMarkup:
             text="◀️ Назад к списку",
             callback_data="teacher_queue",
         )
+    )
+    return builder.as_markup()
+
+
+# ── Ученик: главное меню ──
+
+
+def student_menu_keyboard() -> InlineKeyboardMarkup:
+    """Меню ученика: расписание, дз, оплата, восстановление пароля."""
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="📅 Расписание", callback_data="schedule:week"),
+    )
+    builder.row(
+        InlineKeyboardButton(text="📝 Мои задания", callback_data="my_assignments"),
+    )
+    builder.row(
+        InlineKeyboardButton(text="💳 Отправить оплату", callback_data="student_pay"),
+    )
+    builder.row(
+        InlineKeyboardButton(text="🔑 Восстановить пароль", callback_data="forgot_password"),
+    )
+    return builder.as_markup()
+
+
+# ── Расписание: выбор периода ──
+
+
+def schedule_period_keyboard() -> InlineKeyboardMarkup:
+    """Кнопки выбора периода: неделя / месяц."""
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="📅 Неделя", callback_data="schedule:week"),
+        InlineKeyboardButton(text="📅 Месяц", callback_data="schedule:month"),
+    )
+    builder.row(
+        InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_schedule_menu"),
     )
     return builder.as_markup()
 
