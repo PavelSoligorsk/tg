@@ -13,7 +13,8 @@ import uuid
 from typing import Optional
 
 from aiogram import Router, F, Bot
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.fsm.context import FSMContext
 from aiogram.filters import Command
 
@@ -36,6 +37,26 @@ from app.bot import redis_queue
 logger = logging.getLogger(__name__)
 
 router = Router()
+
+# ═══════════════════════════════════════════════════════════════
+# Восстановление пароля (общая кнопка для всех ролей)
+# ═══════════════════════════════════════════════════════════════
+
+
+@router.callback_query(F.data == "forgot_password")
+async def cb_forgot_password(callback: CallbackQuery) -> None:
+    """Пользователь нажал «Восстановить пароль»."""
+    tg_username = callback.from_user.username or ""
+    if not tg_username:
+        await callback.answer("Не задан @username", show_alert=True)
+        return
+
+    await callback.answer()
+    result = await api.forgot_password(tg_username)
+    await callback.message.answer(
+        f"🔑 *Сброс пароля*\n\n{result.get('message', 'Ошибка')}",
+        parse_mode="Markdown",
+    )
 
 # ── Форматирование ──
 
@@ -834,11 +855,26 @@ async def _do_reject(
 
 
 async def _handle_student_start(message: Message, result: dict, name: str) -> None:
-    """Заглушка для ученика."""
+    """Приветствие ученика. Сохраняем tg_chat_id и показываем меню."""
+    tg_username = result.get("tg_username", message.from_user.username or "")
+
+    # Сохраняем chat_id ученика на платформе (для восстановления пароля)
+    if tg_username:
+        reg_result = await api.register_chat(tg_username, message.chat.id)
+        if reg_result.get("found"):
+            logger.info(f"Chat registered for student @{tg_username}: chat_id={message.chat.id}")
+        else:
+            logger.warning(f"Failed to register chat for student @{tg_username}: {reg_result}")
+
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="🔑 Восстановить пароль", callback_data="forgot_password"),
+    )
     await message.answer(
         f"👋 Привет, {name}!\n\n"
         f"Функционал для учеников скоро появится! 🚀\n"
-        f"А пока пользуйтесь веб-версией платформы."
+        f"А пока пользуйтесь веб-версией платформы.",
+        reply_markup=builder.as_markup(),
     )
 
 

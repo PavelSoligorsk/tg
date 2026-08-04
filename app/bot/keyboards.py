@@ -8,7 +8,7 @@ from typing import List
 # ── Главное меню родителя ──
 
 def parent_menu_keyboard(student_id: int) -> InlineKeyboardMarkup:
-    """Меню с 3 опциями для родителя."""
+    """Меню с опциями для родителя."""
     builder = InlineKeyboardBuilder()
     builder.row(
         InlineKeyboardButton(text="💳 Отправить оплату", callback_data=f"pay:{student_id}"),
@@ -18,6 +18,9 @@ def parent_menu_keyboard(student_id: int) -> InlineKeyboardMarkup:
     )
     builder.row(
         InlineKeyboardButton(text="📊 Статистика", callback_data=f"stats:{student_id}"),
+    )
+    builder.row(
+        InlineKeyboardButton(text="🔑 Восстановить пароль", callback_data="forgot_password"),
     )
     return builder.as_markup()
 
@@ -116,7 +119,7 @@ def back_to_main_keyboard(student_id: int) -> InlineKeyboardMarkup:
 
 
 def teacher_menu_keyboard(queue_count: int = 0) -> InlineKeyboardMarkup:
-    """Меню учителя с кнопкой очереди и счётчиком."""
+    """Меню учителя с кнопкой очереди, счётчиком и восстановлением пароля."""
     builder = InlineKeyboardBuilder()
     badge = f" ({queue_count})" if queue_count > 0 else ""
     builder.row(
@@ -124,6 +127,9 @@ def teacher_menu_keyboard(queue_count: int = 0) -> InlineKeyboardMarkup:
             text=f"📋 Непроверенные оплаты{badge}",
             callback_data="teacher_queue",
         )
+    )
+    builder.row(
+        InlineKeyboardButton(text="🔑 Восстановить пароль", callback_data="forgot_password"),
     )
     return builder.as_markup()
 

@@ -164,6 +164,22 @@ class PlatformAPI:
             logger.error(f"get_teacher_chat network error: {e}")
             return {"found": False, "error": str(e)}
 
+    async def forgot_password(self, tg_username: str) -> dict:
+        """POST /telegram/forgot-password — запросить сброс пароля."""
+
+        url = f"{self.base_url}/telegram/forgot-password"
+        payload = {"tg_username": tg_username.lstrip("@")}
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(url, json=payload, headers=self.headers, timeout=15.0)
+                if resp.status_code == 200:
+                    return resp.json()
+                logger.error(f"forgot_password error {resp.status_code}: {resp.text}")
+                return {"ok": False, "message": f"Ошибка сервера ({resp.status_code})"}
+        except httpx.RequestError as e:
+            logger.error(f"forgot_password network error: {e}")
+            return {"ok": False, "message": "Не удалось связаться с сервером."}
+
 
 # Глобальный экземпляр
 api = PlatformAPI()
